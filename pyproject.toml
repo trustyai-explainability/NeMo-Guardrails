@@ -70,6 +70,8 @@ watchdog = ">=3.0.0,"
 
 # tracing
 opentelemetry-api = { version = ">=1.27.0,<2.0.0", optional = true }
+opentelemetry-sdk = { version = ">=1.27.0,<2.0.0", optional = true }
+opentelemetry-exporter-otlp = { version = ">=1.27.0,<2.0.0", optional = true }
 aiofiles = { version = ">=24.1.0", optional = true }
 
 # openai
@@ -106,7 +108,7 @@ sdd = ["presidio-analyzer", "presidio-anonymizer"]
 eval = ["tqdm", "numpy", "streamlit", "tornado"]
 openai = ["langchain-openai"]
 gcp = ["google-cloud-language"]
-tracing = ["opentelemetry-api", "aiofiles"]
+tracing = ["opentelemetry-api", "opentelemetry-sdk", "opentelemetry-exporter-otlp", "aiofiles"]
 nvidia = ["langchain-nvidia-ai-endpoints"]
 jailbreak = ["yara-python"]
 # Poetry does not support recursive dependencies, so we need to add all the dependencies here.
@@ -121,6 +123,8 @@ all = [
   "langchain-openai",
   "google-cloud-language",
   "opentelemetry-api",
+  "opentelemetry-sdk",
+  "opentelemetry-exporter-otlp",
   "aiofiles",
   "langchain-nvidia-ai-endpoints",
   "yara-python",
