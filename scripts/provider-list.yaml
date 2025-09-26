@@ -10,12 +10,13 @@ profiles:
 
 # Define which guardrails are closed source (everything else is considered open source)
 closed_source_guardrails:
+  - "autoalign"
   - "activefence"
+  - "clavata"
   - "cleanlab"
-  - "clavata"
-  - "privateai"
   - "fiddler"
-  - "patronusai"
-  - "clavata"
-  - "prompt_security"
   - "gcp_moderate_text"
+  - "pangea"
+  - "patronusai"
+  - "privateai"
+  - "prompt_security"
