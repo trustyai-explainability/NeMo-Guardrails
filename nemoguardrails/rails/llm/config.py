@@ -829,6 +829,33 @@ class GuardrailsAIRailConfig(BaseModel):
                 return _validator
         return None
 
+class KServeDetectorConfig(BaseModel):
+    """Configuration for single KServe detector."""
+    
+    inference_endpoint: str = Field(
+        description="The KServe API endpoint for the detector"
+    )
+    model_name: Optional[str] = Field(
+        default=None,
+        description="The name of the KServe model"
+    )
+    threshold: float = Field(
+        default=0.7,
+        description="Detection threshold (0.0 to 1.0) - scores above this are blocked"
+    )
+    timeout: int = Field(
+        default=30,
+        description="HTTP request timeout in seconds"
+    )
+    detector_type: str = Field(
+        default="toxicity",
+        description="Type of detector (toxicity, jailbreak, hap, etc.)"
+    )
+    
+    risk_type: Optional[str] = Field(
+        default=None,
+        description="Risk classification type (hate_speech, prompt_injection, data_privacy, etc.). If not specified, defaults to detector_type value."
+    )
 
 class RailsConfigData(BaseModel):
     """Configuration data for specific rails that are supported out-of-the-box."""
@@ -886,6 +913,16 @@ class RailsConfigData(BaseModel):
     guardrails_ai: Optional[GuardrailsAIRailConfig] = Field(
         default_factory=GuardrailsAIRailConfig,
         description="Configuration for Guardrails AI validators.",
+    )
+
+    kserve_detectors: Optional[Dict[str, KServeDetectorConfig]] = Field(
+        default_factory=dict,
+        description="Dynamic registry of KServe detectors. Keys are detector names, values are detector configurations."
+    )
+
+    kserve_detector: Optional[KServeDetectorConfig] = Field(
+        default=None,
+        description="Legacy single detector configuration for backward compatibility.",
     )
 
 
