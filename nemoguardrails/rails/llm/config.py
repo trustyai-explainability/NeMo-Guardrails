@@ -840,21 +840,20 @@ class KServeDetectorConfig(BaseModel):
         description="The name of the KServe model"
     )
     threshold: float = Field(
-        default=0.7,
-        description="Detection threshold (0.0 to 1.0) - scores above this are blocked"
+        default=0.5,
+        description="Probability threshold for detection"
     )
     timeout: int = Field(
         default=30,
         description="HTTP request timeout in seconds"
     )
-    detector_type: str = Field(
-        default="toxicity",
-        description="Type of detector (toxicity, jailbreak, hap, etc.)"
-    )
-    
     risk_type: Optional[str] = Field(
         default=None,
-        description="Risk classification type (hate_speech, prompt_injection, data_privacy, etc.). If not specified, defaults to detector_type value."
+        description="Risk classification type (defaults to detector key name if not specified)"
+    )
+    safe_labels: List[Union[int, str]] = Field(
+        default_factory=lambda: [0],
+        description="Class indices or label names considered safe"
     )
 
 class RailsConfigData(BaseModel):
@@ -918,11 +917,6 @@ class RailsConfigData(BaseModel):
     kserve_detectors: Optional[Dict[str, KServeDetectorConfig]] = Field(
         default_factory=dict,
         description="Dynamic registry of KServe detectors. Keys are detector names, values are detector configurations."
-    )
-
-    kserve_detector: Optional[KServeDetectorConfig] = Field(
-        default=None,
-        description="Legacy single detector configuration for backward compatibility.",
     )
 
 
