@@ -1,13 +1,14 @@
 """
 Generic KServe Detector Integration for NeMo Guardrails
-Supports any detector format with configurable safe_labels.
+Supports KServe V1 protocol with --return_probabilities flag.
 """
 
 import asyncio
 import json
 import logging
+import math
 import os
-from typing import Dict, Any, Optional, Tuple, List, Union
+from typing import Dict, Any, Optional, Tuple, List
 
 import aiohttp
 from nemoguardrails.actions import action
@@ -17,14 +18,22 @@ log = logging.getLogger(__name__)
 DEFAULT_TIMEOUT = 30
 
 
+def softmax(logits: List[float]) -> List[float]:
+    """Convert logits to probabilities using softmax with numerical stability"""
+    max_logit = max(logits)
+    exp_logits = [math.exp(x - max_logit) for x in logits]
+    sum_exp = sum(exp_logits)
+    return [x / sum_exp for x in exp_logits]
+
+
 def _parse_safe_labels_env():
     """Parse SAFE_LABELS environment variable, defaulting to [0]"""
     if os.environ.get("SAFE_LABELS"):
         try:
             parsed = json.loads(os.environ.get("SAFE_LABELS"))
-            if isinstance(parsed, (int, str)):
+            if isinstance(parsed, int):
                 return [parsed]
-            if isinstance(parsed, list) and all(isinstance(x, (int, str)) for x in parsed):
+            if isinstance(parsed, list) and all(isinstance(x, int) for x in parsed):
                 return parsed
         except Exception as e:
             log.warning(f"Could not parse SAFE_LABELS: {e}. Using [0]")
@@ -34,12 +43,17 @@ def _parse_safe_labels_env():
 
 def parse_kserve_response(
     response_data: Dict[str, Any],
-    safe_labels: List[Union[int, str]],
+    safe_labels: List[int],
     threshold: float = 0.5
 ) -> Tuple[bool, float, Optional[str]]:
     """
-    Parse KServe detector response and determine safety.
-    Handles: probability distributions, integer arrays, named labels, entity dicts.
+    Parse KServe V1 detector response with --return_probabilities flag.
+    
+    Supports:
+    - Sequence classification: {"0": val, "1": val, ...}
+    - Token classification: [[{"0": val, "10": val, ...}, ...]]
+    
+    Values may be logits or probabilities. Softmax is applied if needed.
     """
     try:
         predictions = response_data.get("predictions", [])
@@ -49,21 +63,23 @@ def parse_kserve_response(
         prediction = predictions[0]
         safe_labels_set = set(safe_labels)
         
-        # Sequence classification - probability distributions
-        # Format: {"0": 0.994, "1": 0.006}
+        # Sequence classification - probability/logit distributions
+        # Format: {"0": 0.994, "1": 0.006} or {"0": 1.12, "1": -1.53}
         if isinstance(prediction, dict) and all(
             str(k).isdigit() or isinstance(k, int) for k in prediction.keys()
         ):
+            # Convert logits to probabilities if needed
+            values = list(prediction.values())
+            if abs(sum(values) - 1.0) > 0.1:  # Values don't sum to 1 = logits
+                probabilities = softmax(values)
+                prediction = {k: p for k, p in zip(prediction.keys(), probabilities)}
+            
             detected_classes = []
             
             for class_id_key, prob in prediction.items():
                 class_id = int(class_id_key) if isinstance(class_id_key, str) else class_id_key
                 
-                if (
-                    prob >= threshold 
-                    and class_id not in safe_labels_set 
-                    and str(class_id) not in safe_labels_set
-                ):
+                if prob >= threshold and class_id not in safe_labels_set:
                     detected_classes.append((class_id, prob))
             
             if detected_classes:
@@ -73,13 +89,13 @@ def parse_kserve_response(
         
         # Token classification - lists of predictions
         if isinstance(prediction, list) and len(prediction) > 0:
-            # Unwrap nested lists: [[[17,17,10]]] -> [17,17,10]
+            # Unwrap nested lists: [[[...]]] -> [[...]]
             if isinstance(prediction[0], list):
                 prediction = prediction[0]
             
             first_elem = prediction[0] if len(prediction) > 0 else None
             
-            # Probability distributions per token
+            # Probability/logit distributions per token
             # Format: [{"0": 0.001, "10": 0.986}, ...]
             if isinstance(first_elem, dict) and all(
                 str(k).isdigit() or isinstance(k, int) for k in first_elem.keys()
@@ -87,86 +103,27 @@ def parse_kserve_response(
                 flagged_tokens = []
                 
                 for token_idx, token_probs in enumerate(prediction):
+                    # Convert logits to probabilities if needed
+                    values = list(token_probs.values())
+                    if abs(sum(values) - 1.0) > 0.1:  # Logits
+                        probabilities = softmax(values)
+                        token_probs = {k: p for k, p in zip(token_probs.keys(), probabilities)}
+                    
                     max_class_key = max(token_probs.items(), key=lambda x: x[1])[0]
                     max_prob = token_probs[max_class_key]
                     max_class_id = int(max_class_key) if isinstance(max_class_key, str) else max_class_key
                     
-                    if (
-                        max_prob >= threshold 
-                        and max_class_id not in safe_labels_set 
-                        and str(max_class_id) not in safe_labels_set
-                    ):
+                    if max_prob >= threshold and max_class_id not in safe_labels_set:
                         flagged_tokens.append((token_idx, max_class_id, max_prob))
                 
                 if flagged_tokens:
                     confidence = len(flagged_tokens) / len(prediction)
                     return False, min(confidence, 1.0), f"DETECTED_{len(flagged_tokens)}_TOKENS"
                 return True, 0.0, "SAFE"
-            
-            # Integer arrays
-            # Format: [17, 17, 10, 10, 17]
-            if all(isinstance(x, int) for x in prediction):
-                flagged_tokens = [lbl for lbl in prediction if lbl not in safe_labels_set]
-                
-                if flagged_tokens:
-                    confidence = len(flagged_tokens) / len(prediction)
-                    return False, min(confidence, 1.0), f"DETECTED_{len(flagged_tokens)}_TOKENS"
-                return True, 0.0, "SAFE"
-            
-            # Entity dicts (NER-style)
-            # Format: [{"entity": "PER", "score": 0.95}, ...]
-            if isinstance(first_elem, dict) and ("entity" in first_elem or "label" in first_elem):
-                detected_entities = []
-                
-                for entity in prediction:
-                    entity_type = entity.get("entity", entity.get("label", "UNKNOWN"))
-                    score = entity.get("score", 0.0)
-                    
-                    if score >= threshold and entity_type not in safe_labels_set:
-                        detected_entities.append((entity_type, score))
-                
-                if detected_entities:
-                    max_score = max(e[1] for e in detected_entities)
-                    entity_types = ",".join(set(e[0] for e in detected_entities))
-                    return False, max_score, entity_types
-                return True, 0.0, "SAFE"
         
-        # Named labels with scores
-        # Format: {"label": "TOXIC", "score": 0.92}
-        if isinstance(prediction, dict) and "label" in prediction:
-            label = prediction.get("label", "UNKNOWN")
-            score = prediction.get("score", 0.0)
-            
-            if score >= threshold and label not in safe_labels_set:
-                return False, score, label
-            return True, score, label
-        
-        # Binary classifiers - single values
-        if isinstance(prediction, (int, float)):
-            if isinstance(prediction, int):
-                if prediction in safe_labels_set:
-                    return True, 0.0, "SAFE"
-                else:
-                    return False, 1.0, f"CLASS_{prediction}"
-            else:
-                predicted_class = round(prediction)
-                if predicted_class in safe_labels_set:
-                    return True, 0.0, "SAFE"
-                
-                if prediction >= threshold:
-                    return False, prediction, f"SCORE_{prediction:.3f}"
-                return True, prediction, "SAFE"
-        
-        # Boolean classifiers
-        if isinstance(prediction, bool):
-            predicted_class = 1 if prediction else 0
-            if predicted_class in safe_labels_set:
-                return True, 0.0, "SAFE"
-            else:
-                return False, 1.0, f"BOOLEAN_{prediction}"
-        
-        log.warning(f"Unknown format: {type(prediction)}")
-        return False, 0.0, "UNKNOWN_FORMAT"
+        # Unsupported format
+        log.error(f"Unsupported response format. Expected KServe V1 with --return_probabilities. Got: {type(prediction)}")
+        return False, 0.0, "UNSUPPORTED_FORMAT"
         
     except Exception as e:
         log.error(f"Parse error: {e}")
@@ -178,7 +135,7 @@ def parse_kserve_response_detailed(
     threshold: float,
     detector_type: str,
     risk_type: str,
-    safe_labels: List[Union[int, str]]
+    safe_labels: List[int]
 ) -> Dict[str, Any]:
     """Parse response and add metadata for tracking"""
     try:
@@ -208,7 +165,7 @@ def parse_kserve_response_detailed(
 
 
 async def _call_kserve_endpoint(endpoint: str, text: str, timeout: int) -> Dict[str, Any]:
-    """Call KServe inference endpoint with timeout and auth"""
+    """Call KServe V1 inference endpoint with timeout and auth"""
     headers = {"Content-Type": "application/json"}
     
     api_key = os.getenv("KSERVE_API_KEY")
@@ -352,6 +309,7 @@ async def kserve_check_all_detectors(
         "detector_count": len(kserve_detectors)
     }
 
+
 @action()
 async def generate_block_message(
     context: Optional[Dict] = None,
@@ -381,6 +339,7 @@ async def generate_block_message(
     # Multiple detectors blocked
     detector_names = [d['detector'] for d in blocking]
     return f"Input blocked by {len(blocking)} detectors: {', '.join(detector_names)}"
+
 
 @action()
 async def kserve_check_detector(

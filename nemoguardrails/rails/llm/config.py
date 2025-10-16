@@ -851,9 +851,9 @@ class KServeDetectorConfig(BaseModel):
         default=None,
         description="Risk classification type (defaults to detector key name if not specified)"
     )
-    safe_labels: List[Union[int, str]] = Field(
+    safe_labels: List[int] = Field(
         default_factory=lambda: [0],
-        description="Class indices or label names considered safe"
+        description="Class indices considered safe"
     )
 
 class RailsConfigData(BaseModel):
