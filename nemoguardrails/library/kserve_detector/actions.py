@@ -1,6 +1,9 @@
 """
-Generic KServe Detector Integration for NeMo Guardrails
-Supports KServe V1 protocol with --return_probabilities flag.
+KServe HuggingFace Detector Integration for NeMo Guardrails
+
+Integrates KServe-hosted HuggingFace classification models as NeMo detectors.
+Requires KServe HuggingFace runtime with --return_probabilities and --backend=huggingface flags.
+Supports sequence classification and token classification tasks via KServe V1 protocol.
 """
 
 import asyncio
@@ -18,9 +21,8 @@ log = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT = 30
 
-# Shared HTTP session for all detector calls
-_http_session = aiohttp.ClientSession()
-
+_http_session: Optional[aiohttp.ClientSession] = None
+_session_lock = asyncio.Lock()
 
 class DetectorResult(BaseModel):
     """Result from a single detector execution"""
@@ -29,7 +31,7 @@ class DetectorResult(BaseModel):
     reason: str = Field(description="Human-readable explanation")
     label: str = Field(description="Predicted class label")
     detector: str = Field(description="Detector name")
-    risk_type: str = Field(description="Risk classification type")
+    # risk_type: str = Field(description="Risk classification type")
 
 
 class AggregatedDetectorResult(BaseModel):
@@ -152,7 +154,7 @@ def parse_kserve_response_detailed(
     response_data: Dict[str, Any], 
     threshold: float,
     detector_type: str,
-    risk_type: str,
+    # risk_type: str,
     safe_labels: List[int]
 ) -> DetectorResult:
     """Parse response and add metadata for tracking"""
@@ -168,7 +170,7 @@ def parse_kserve_response_detailed(
             reason=reason,
             label=label,
             detector=detector_type,
-            risk_type=risk_type
+            # risk_type=risk_type
         )
     except Exception as e:
         log.error(f"Parse error for {detector_type}: {e}")
@@ -178,17 +180,31 @@ def parse_kserve_response_detailed(
             reason=f"{detector_type} parse error: {e}",
             label="ERROR",
             detector=detector_type,
-            risk_type="system_error"
+            # risk_type="system_error"
         )
 
 
-async def _call_kserve_endpoint(endpoint: str, text: str, timeout: int) -> Dict[str, Any]:
-    """Call KServe V1 inference endpoint with timeout and auth"""
+async def _call_kserve_endpoint(
+    endpoint: str, 
+    text: str, 
+    timeout: int,
+    api_key: Optional[str] = None
+) -> Dict[str, Any]:
+    """Call KServe HuggingFace inference endpoint with timeout and auth"""
+    global _http_session
+    
+    # Lazy initialization: create session on first use
+    if _http_session is None:
+        async with _session_lock:
+            if _http_session is None:
+                _http_session = aiohttp.ClientSession()
+    
     headers = {"Content-Type": "application/json"}
     
-    api_key = os.getenv("KSERVE_API_KEY")
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
+    # Use detector-specific key if provided, otherwise fall back to env var
+    token = api_key or os.getenv("KSERVE_API_KEY")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
     
     payload = {"instances": [text]}
     timeout_config = aiohttp.ClientTimeout(total=timeout)
@@ -213,15 +229,16 @@ async def _run_detector(
         endpoint = detector_config.inference_endpoint
         threshold = getattr(detector_config, 'threshold', 0.5)
         timeout = getattr(detector_config, 'timeout', DEFAULT_TIMEOUT)
-        risk_type = getattr(detector_config, 'risk_type', detector_type)
+        api_key = getattr(detector_config, 'api_key', None)
+        # risk_type = getattr(detector_config, 'risk_type', detector_type)
         
         config_safe_labels = getattr(detector_config, 'safe_labels', [])
         all_safe_labels = config_safe_labels if config_safe_labels else _parse_safe_labels_env()
         
-        response_data = await _call_kserve_endpoint(endpoint, user_message, timeout)
+        response_data = await _call_kserve_endpoint(endpoint, user_message, timeout, api_key)
         
         return parse_kserve_response_detailed(
-            response_data, threshold, detector_type, risk_type, all_safe_labels
+             response_data, threshold, detector_type, all_safe_labels
         )
         
     except Exception as e:
@@ -232,7 +249,7 @@ async def _run_detector(
             reason=f"{detector_type} not reachable: {str(e)}",
             label="ERROR",
             detector=detector_type,
-            risk_type="system_error"
+            # risk_type="system_error"
         )
 
 
@@ -314,8 +331,8 @@ async def kserve_check_all_detectors(
     if overall_allowed:
         reason = f"Approved by all {len(allowing)} detectors"
     else:
-        risk_types = [d.risk_type for d in content_blocks]
-        reason = f"Blocked by {len(content_blocks)} detector(s): {', '.join(set(risk_types))}"
+        detector_names = [d.detector for d in content_blocks]
+        reason = f"Blocked by {len(content_blocks)} detector(s): {', '.join(set(detector_names))}"
     
     log.info(f"{'ALLOWED' if overall_allowed else 'BLOCKED'}: {reason}")
     
@@ -352,8 +369,8 @@ async def generate_block_message(
     # Single detector blocked
     if len(blocking) == 1:
         det = blocking[0]
-        return f"Input blocked by {det['detector']} detector (risk: {det['risk_type']}, score: {det['score']:.2f})"
-    
+        return f"Input blocked by {det['detector']} detector (score: {det['score']:.2f})"
+
     # Multiple detectors blocked
     detector_names = [d['detector'] for d in blocking]
     return f"Input blocked by {len(blocking)} detectors: {', '.join(detector_names)}"

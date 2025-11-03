@@ -61,7 +61,7 @@ Future support for Detectors API and KServe V2 may be added if needed.
    - Applies softmax transformation if needed
    - Extracts predicted class and confidence score
    - Compares predicted class against configured `safe_labels`
-   - Returns safety decision with metadata (allowed/blocked, score, risk_type)
+   - Returns safety decision with metadata (allowed/blocked, score, detector_name)
 6. Results aggregation:
    - If ANY detector unavailable: Request blocked with system error message
    - If ANY detector blocks content: Request blocked with detailed message showing blocking detector(s)
@@ -90,7 +90,6 @@ The system distinguishes between infrastructure errors and content violations to
 **System Errors:**
 
 Infrastructure issues such as network timeouts, connection failures, or parse errors are handled separately:
-- Marked with `risk_type: "system_error"`
 - Score set to 0.0 (indicates not a detection score)
 - Tracked in `unavailable_detectors` list
 - User receives service unavailability message
@@ -99,10 +98,9 @@ Infrastructure issues such as network timeouts, connection failures, or parse er
 **Content Violations:**
 
 Actual detections by models:
-- `risk_type`: Detector's configured risk type (e.g., hate_speech, privacy_violation, prompt_injection)
 - Score: Model's confidence score (0.0-1.0)
 - Tracked in `blocking_detectors` list
-- User receives detailed blocking message with detector name, risk type, and confidence score
+- User receives detailed blocking message with detector name, and confidence score
 
 **Multiple Detectors:**
 
@@ -130,7 +128,6 @@ apiVersion: serving.kserve.io/v1alpha1
 kind: ServingRuntime
 metadata:
   name: kserve-huggingfaceruntimev1
-  namespace: <your-namespace>
 spec:
   supportedModelFormats:
     - name: huggingface
@@ -177,7 +174,12 @@ apiVersion: serving.kserve.io/v1beta1
 kind: InferenceService
 metadata:
   name: toxicity-detector
-  namespace: <your-namespace>
+  annotations:
+    serving.knative.openshift.io/enablePassthrough: "true"
+    sidecar.istio.io/inject: "true"
+    sidecar.istio.io/rewriteAppHTTPProbers: "true"
+    serving.kserve.io/deploymentMode: RawDeployment
+    security.opendatahub.io/enable-auth: "true"
 spec:
   predictor:
     minReplicas: 1
@@ -196,8 +198,6 @@ spec:
         limits:
           cpu: "1"
           memory: "4Gi"
-    nodeSelector:
-      node.kubernetes.io/instance-type: m5.2xlarge
 ```
 #### Jailbreak Detector
 
@@ -207,7 +207,12 @@ apiVersion: serving.kserve.io/v1beta1
 kind: InferenceService
 metadata:
   name: jailbreak-detector
-  namespace: <your-namespace>
+  annotations:
+    serving.knative.openshift.io/enablePassthrough: "true"
+    sidecar.istio.io/inject: "true"
+    sidecar.istio.io/rewriteAppHTTPProbers: "true"
+    serving.kserve.io/deploymentMode: RawDeployment
+    security.opendatahub.io/enable-auth: "true"
 spec:
   predictor:
     minReplicas: 1
@@ -226,8 +231,6 @@ spec:
         limits:
           cpu: "1"
           memory: "4Gi"
-    nodeSelector:
-      node.kubernetes.io/instance-type: m5.2xlarge
 ```
 #### PII Detector
 
@@ -237,7 +240,12 @@ apiVersion: serving.kserve.io/v1beta1
 kind: InferenceService
 metadata:
   name: pii-detector
-  namespace: <your-namespace>
+  annotations:
+    serving.knative.openshift.io/enablePassthrough: "true"
+    sidecar.istio.io/inject: "true"
+    sidecar.istio.io/rewriteAppHTTPProbers: "true"
+    serving.kserve.io/deploymentMode: RawDeployment
+    security.opendatahub.io/enable-auth: "true"
 spec:
   predictor:
     minReplicas: 1
@@ -256,8 +264,6 @@ spec:
         limits:
           cpu: "4"
           memory: "8Gi"
-    nodeSelector:
-      node.kubernetes.io/instance-type: m5.2xlarge
 ```
 **File:** `hap-detector.yml`
 ```yaml
@@ -265,7 +271,12 @@ apiVersion: serving.kserve.io/v1beta1
 kind: InferenceService
 metadata:
   name: hap-detector
-  namespace: <your-namespace>
+  annotations:
+    serving.knative.openshift.io/enablePassthrough: "true"
+    sidecar.istio.io/inject: "true"
+    sidecar.istio.io/rewriteAppHTTPProbers: "true"
+    serving.kserve.io/deploymentMode: RawDeployment
+    security.opendatahub.io/enable-auth: "true"
 spec:
   predictor:
     minReplicas: 1
@@ -284,8 +295,6 @@ spec:
         limits:
           cpu: "2"
           memory: "4Gi"
-    nodeSelector:
-      node.kubernetes.io/instance-type: m5.2xlarge
 ```
 Deploy all detectors:
 ```bash
@@ -307,6 +316,87 @@ hap-detector         True
 
 This may take 2-5 minutes as models download from HuggingFace.
 
+### Authentication (Optional)
+
+KServe InferenceServices can be configured with authentication to restrict access to detector endpoints.
+
+#### Prerequisites for Authentication
+
+Authentication requires:
+- Service Mesh (Istio) installed in your cluster
+- Authorino configured in DataScienceCluster for OpenDataHub deployments
+- Or alternative authentication mechanism (API Gateway, Ingress controller)
+
+#### Enabling Authentication on Detectors
+
+Add auth annotations to InferenceServices:
+
+**Example: Protected HAP Detector**
+```yaml
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: hap-detector
+  annotations:
+    security.opendatahub.io/enable-auth: "true"
+    serving.kserve.io/deploymentMode: RawDeployment
+    serving.knative.openshift.io/enablePassthrough: "true"
+    sidecar.istio.io/inject: "true"
+    sidecar.istio.io/rewriteAppHTTPProbers: "true"
+spec:
+  predictor:
+    minReplicas: 1
+    maxReplicas: 2
+    model:
+      modelFormat:
+        name: huggingface
+      args:
+        - --model_name=hap-detector
+        - --model_id=ibm-granite/granite-guardian-hap-38m
+        - --task=sequence_classification
+      resources:
+        requests:
+          cpu: "1"
+          memory: "2Gi"
+        limits:
+          cpu: "2"
+          memory: "4Gi"
+```
+
+**Note:** Authentication annotations vary by cluster infrastructure. Consult your cluster administrator.
+
+#### Configuring NeMo Authentication
+
+**Option 1: Global Token (All Detectors)**
+```yaml
+# In nemo-deployment.yml:
+env:
+  - name: CONFIG_ID
+    value: production
+  - name: OPENAI_API_KEY
+    value: sk-dummy-key
+  - name: KSERVE_API_KEY
+    value: "your-bearer-token"
+```
+
+**Option 2: Per-Detector Tokens**
+```yaml
+# In nemo-configmap.yml:
+kserve_detectors:
+  toxicity:
+    inference_endpoint: "..."
+    api_key: "toxicity-token"
+  jailbreak:
+    api_key: "jailbreak-token"
+  pii:
+    # Falls back to KSERVE_API_KEY env var
+```
+
+**Getting tokens:**
+```bash
+# For OpenShift service accounts:
+oc sa get-token <service-account-name> -n <your-namespace>
+```
 ### Step 3: Deploy vLLM Inference Service
 
 vLLM uses a PVC-based approach to pre-download the Phi-3-mini model. This avoids runtime dependencies on HuggingFace and uses Red Hat's official AI Inference Server image.
@@ -317,7 +407,6 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: phi3-model-pvc
-  namespace: <your-namespace>
 spec:
   accessModes:
     - ReadWriteOnce
@@ -329,7 +418,6 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: phi3-model-downloader
-  namespace: <your-namespace>
 spec:
   replicas: 1
   selector:
@@ -366,7 +454,6 @@ apiVersion: serving.kserve.io/v1beta1
 kind: InferenceService
 metadata:
   name: vllm-phi3
-  namespace: <your-namespace>
 spec:
   predictor:
     containers:
@@ -401,8 +488,6 @@ spec:
       - name: model-storage
         persistentVolumeClaim:
           claimName: phi3-model-pvc
-    nodeSelector:
-      node.kubernetes.io/instance-type: g4dn.2xlarge
 ```
 Deploy:
 
@@ -436,7 +521,6 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: nemo-production-config
-  namespace: <your-namespace>
 data:
   config.yaml: |
     rails:
@@ -448,28 +532,28 @@ data:
             threshold: 0.4
             timeout: 30
             safe_labels: [0]
-            risk_type: "hate_speech"
+            api_key: "your-toxicity-token"
           jailbreak:
             inference_endpoint: "http://jailbreak-detector-predictor.<your-namespace>.svc.cluster.local:8080/v1/models/jailbreak-detector:predict"
             model_name: "jackhhao/jailbreak-classifier"
             threshold: 0.5
             timeout: 30
             safe_labels: [0]
-            risk_type: "prompt_injection"
+            api_key: "your-jailbreak-token"
           pii:
             inference_endpoint: "http://pii-detector-predictor.<your-namespace>.svc.cluster.local:8080/v1/models/pii-detector:predict"
             model_name: "iiiorg/piiranha-v1-detect-personal-information"
             threshold: 0.15
             timeout: 30
             safe_labels: [17]
-            risk_type: "privacy_violation"
+            api_key: "your-pii-token"
           hap:
             inference_endpoint: "http://hap-detector-predictor.<your-namespace>.svc.cluster.local:8080/v1/models/hap-detector:predict"
             model_name: "ibm-granite/granite-guardian-hap-38m"
             threshold: 0.5
             timeout: 30
             safe_labels: [0]
-            risk_type: "hate_abuse_profanity"
+            api_key: "your-hap-token"
       input:
         flows:
           - check_input_safety
@@ -529,7 +613,6 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: nemo-guardrails-server
-  namespace: <your-namespace>
 spec:
   replicas: 1
   selector:
@@ -540,8 +623,6 @@ spec:
       labels:
         app: nemo-guardrails
     spec:
-      nodeSelector:
-        node.kubernetes.io/instance-type: m5.2xlarge
       containers:
       - name: nemo-guardrails
         image: quay.io/rh-ee-stondapu/trustyai-nemo:latest
@@ -551,8 +632,8 @@ spec:
           value: production
         - name: OPENAI_API_KEY
           value: sk-dummy-key
-        - name: SAFE_LABELS
-          value: "[0]"
+        - name: KSERVE_API_KEY
+          value: "your-global-token"
         ports:
         - containerPort: 8000
         volumeMounts:
@@ -574,7 +655,6 @@ apiVersion: v1
 kind: Service
 metadata:
   name: nemo-guardrails-server
-  namespace: <your-namespace>
 spec:
   selector:
     app: nemo-guardrails
@@ -587,7 +667,6 @@ apiVersion: route.openshift.io/v1
 kind: Route
 metadata:
   name: nemo-guardrails-server
-  namespace: <your-namespace>
 spec:
   port:
     targetPort: 8000
@@ -662,7 +741,7 @@ curl -X POST $YOUR_ROUTE/v1/chat/completions \
   "messages": [
     {
       "role": "assistant",
-      "content": "{intent:Input blocked by hap detector (risk: hate_abuse_profanity, score: 1.00)}"
+      "content": "{intent:Input blocked by hap detector (score: 1.00)}"
     }
   ]
 }
@@ -687,7 +766,7 @@ curl -X POST $YOUR_ROUTE/v1/chat/completions \
   "messages": [
     {
       "role": "assistant",
-      "content": "{intent:Input blocked by pii detector (risk: privacy_violation, score: 0.60)}"
+      "content": "{intent:Input blocked by pii detector (score: 0.60)}"
     }
   ]
 }
@@ -718,7 +797,7 @@ curl -X POST $YOUR_ROUTE/v1/chat/completions \
   "messages": [
     {
       "role": "assistant",
-      "content": "{intent:Input blocked by jailbreak detector (risk: prompt_injection, score: 0.74)}"
+      "content": "{intent:Input blocked by jailbreak detector (score: 0.74)}"
     }
   ]
 }
@@ -765,6 +844,26 @@ The parser automatically:
 3. Finds maximum probability class
 4. Checks against `safe_labels`
 
+## Unit/Integration tests
+
+### Running Tests
+
+Unit and integration tests are available in `tests/test_kserve_detector_actions.py`:
+```bash
+# Run KServe detector tests
+pytest tests/test_kserve_detector_actions.py -v
+
+# Run with coverage
+pytest tests/test_kserve_detector_actions.py --cov=nemoguardrails.library.kserve_detector
+```
+
+Tests cover:
+- Response parsing (probabilities vs logits)
+- Safe labels logic
+- Authentication token handling
+- Detector aggregation
+- Error handling
+
 ## Adding New Detectors
 
 No code changes required to add new detectors. The system is fully configuration-driven.
@@ -801,7 +900,6 @@ kserve_detectors:
     threshold: 0.5
     timeout: 30
     safe_labels: [0]  # Adjust based on your model's output
-    risk_type: "your_risk_category"
 ```
 
 Step 4: Apply updated ConfigMap and restart:

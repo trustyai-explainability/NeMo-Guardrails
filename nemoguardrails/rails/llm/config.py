@@ -847,9 +847,9 @@ class KServeDetectorConfig(BaseModel):
         default=30,
         description="HTTP request timeout in seconds"
     )
-    risk_type: Optional[str] = Field(
+    api_key: Optional[str] = Field(
         default=None,
-        description="Risk classification type (defaults to detector key name if not specified)"
+        description="Bearer token for authenticating to this detector. If not specified, uses KSERVE_API_KEY environment variable."
     )
     safe_labels: List[int] = Field(
         default_factory=lambda: [0],
