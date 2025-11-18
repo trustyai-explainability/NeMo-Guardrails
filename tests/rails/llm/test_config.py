@@ -21,7 +21,7 @@ from langchain.llms.base import BaseLLM
 from pydantic import ValidationError
 
 from nemoguardrails.rails.llm.config import Model, RailsConfig, TaskPrompt
-from nemoguardrails.rails.llm.llmrails import LLMRails
+from nemoguardrails.rails.llm.model_factory import ModelFactory
 
 
 def test_task_prompt_valid_content():
@@ -317,9 +317,9 @@ def test_llm_rails_configure_streaming_with_attr():
         streaming=True,
     )
 
-    rails = LLMRails(config, llm=mock_llm)
+    model_factory = ModelFactory(config=config, injected_llm=mock_llm)
     setattr(mock_llm, "streaming", None)
-    rails._configure_main_llm_streaming(llm=mock_llm)
+    model_factory._configure_streaming(llm=mock_llm)
 
     assert mock_llm.streaming
 
@@ -333,8 +333,8 @@ def test_llm_rails_configure_streaming_without_attr(caplog):
         streaming=True,
     )
 
-    rails = LLMRails(config, llm=mock_llm)
-    rails._configure_main_llm_streaming(mock_llm)
+    model_factory = ModelFactory(config=config, injected_llm=mock_llm)
+    model_factory._configure_streaming(llm=mock_llm)
 
     assert caplog.messages[-1] == "Provided main LLM does not support streaming."
 
