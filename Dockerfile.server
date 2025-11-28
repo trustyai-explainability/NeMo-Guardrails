@@ -3,7 +3,6 @@ FROM registry.access.redhat.com/ubi9/python-312:latest as build
 USER 0
 WORKDIR /app
 
-ARG POETRY_VERSION=2.2.1
 ARG PYYAML_VERSION=6.0.3
 ARG GUARDRAILS_PROFILE=opensource
 
@@ -12,12 +11,11 @@ RUN dnf install -y --nodocs --setopt=install_weak_deps=False \
         gcc-c++ \
         git && \
     pip install --no-cache-dir \
-        poetry==${POETRY_VERSION} \
         pyyaml==${PYYAML_VERSION} && \
     dnf clean all && \
     rm -rf /var/cache/dnf /tmp/* /var/tmp/*
 
-COPY pyproject.toml poetry.lock README.md ./
+COPY requirements.txt pyproject.toml README.md ./
 COPY nemoguardrails/ ./nemoguardrails/
 COPY scripts/ ./scripts/
 COPY examples/bots/ ./examples/bots/
@@ -25,29 +23,28 @@ COPY examples/bots/ ./examples/bots/
 RUN chmod +x ./scripts/entrypoint.sh
 RUN python3 ./scripts/filter_guardrails.py ./scripts/provider-list.yaml $GUARDRAILS_PROFILE
 
-ENV POETRY_VIRTUALENVS_IN_PROJECT=1 \
-    POETRY_NO_INTERACTION=1 \
-    POETRY_VIRTUALENVS_CREATE=true \
-    POETRY_NO_CACHE=1 \
-    HF_HOME=/app/.cache/huggingface \
+ENV HF_HOME=/app/.cache/huggingface \
     TRANSFORMERS_CACHE=/app/.cache/transformers \
     SENTENCE_TRANSFORMERS_HOME=/app/.cache/sentence_transformers \
     NLTK_DATA=/app/.cache/nltk_data \
     FASTEMBED_CACHE_PATH=/app/.cache/fastembed
 
-RUN poetry install --no-ansi --only main --extras="sdd jailbreak openai nvidia tracing models" && \
-    poetry cache clear --all pypi && \
-    rm -rf /root/.cache/pip /tmp/* /var/tmp/* /opt/app-root/src/.cache/pypoetry
+# Create virtual environment and install dependencies
+RUN python3 -m venv /app/.venv && \
+    /app/.venv/bin/pip install --no-cache-dir \
+        --extra-index-url https://download.pytorch.org/whl/cpu \
+        -r requirements.txt && \
+    /app/.venv/bin/pip install --no-cache-dir --no-deps . && \
+    rm -rf /root/.cache/pip /tmp/* /var/tmp/*
 
+# Pre-download required models and cleanup
 RUN set -ex && \
-    GUARDRAILS_PROFILE=$GUARDRAILS_PROFILE poetry run python ./scripts/pre_download_required_models.py && \
+    GUARDRAILS_PROFILE=$GUARDRAILS_PROFILE /app/.venv/bin/python ./scripts/pre_download_required_models.py && \
     find /app/.cache -type f -name "*.pyc" -delete && \
     find /app/.cache -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true && \
     find /app/.cache -type d -name ".git" -exec rm -rf {} + 2>/dev/null || true && \
-    poetry cache clear --all pypi && \
-    rm -rf /root/.cache/pip /tmp/* /var/tmp/*
-
-RUN dnf remove -y gcc gcc-c++ git && \
+    rm -rf /app/.cache/huggingface/xet /root/.cache /tmp/* /var/tmp/* && \
+    dnf remove -y gcc gcc-c++ git && \
     dnf clean all && \
     rm -rf /var/cache/dnf
 
