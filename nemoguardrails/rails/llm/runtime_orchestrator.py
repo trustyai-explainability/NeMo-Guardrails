@@ -1,11 +1,26 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Runtime orchestrator for managing Colang runtime execution."""
 
 import asyncio
 import logging
 from typing import Any, List, Optional, Tuple, cast
 
-from nemoguardrails.colang.v1_0.runtime.runtime import Runtime, RuntimeV1_0
-from nemoguardrails.colang.v2_x.runtime.flows import State
+from nemoguardrails.colang.runtime import Runtime
+from nemoguardrails.colang.v1_0.runtime.runtime import RuntimeV1_0
 from nemoguardrails.colang.v2_x.runtime.runtime import RuntimeV2_x
 from nemoguardrails.colang.v2_x.runtime.serialization import state_to_json
 from nemoguardrails.logging.verbose import set_verbose
@@ -32,6 +47,7 @@ class RuntimeOrchestrator:
         """
         self.config = config
         self.verbose = verbose
+        self.runtime: Runtime
 
         if self.verbose:
             set_verbose(True, llm_calls=True)
@@ -67,8 +83,29 @@ class RuntimeOrchestrator:
                 assert isinstance(state, dict)
                 state_events = state.get("events", [])
 
+                # Extract any context variables from state (keys other than "events")
+                # and create a ContextUpdate event to make them available in Colang
+                context_vars = {k: v for k, v in state.items() if k != "events"}
+                if context_vars:
+                    log.info(
+                        f"DEBUG: Creating ContextUpdate event from state with context_vars={context_vars}"
+                    )
+                    from nemoguardrails.utils import new_event_dict
+
+                    context_update_event = new_event_dict(
+                        "ContextUpdate", data=context_vars
+                    )
+                    log.info(
+                        f"DEBUG: Created ContextUpdate event: {context_update_event}"
+                    )
+                    state_events = [context_update_event] + state_events
+
+            all_events = state_events + events
+            log.info(
+                f"DEBUG: Calling runtime.generate_events with {len(all_events)} events, first few: {all_events[:3]}"
+            )
             new_events = await self.runtime.generate_events(
-                state_events + events, processing_log=processing_log
+                all_events, processing_log=processing_log
             )
             output_state = None
 
@@ -107,8 +144,21 @@ class RuntimeOrchestrator:
         """
         # Protect process_events to be called only once at a time
         async with process_events_semaphore:
-            output_events, output_state = await self.runtime.process_events(
-                events, state, blocking
-            )
+            if self.config.colang_version == "1.0":
+                # For Colang 1.0, use generate_events
+                state_events = []
+                if state:
+                    assert isinstance(state, dict)
+                    state_events = state.get("events", [])
+
+                output_events = await self.runtime.generate_events(
+                    state_events + events
+                )
+                output_state = None
+            else:
+                # For Colang 2.x, use process_events
+                output_events, output_state = await self.runtime.process_events(
+                    events, state, blocking
+                )
 
         return (output_events, output_state)

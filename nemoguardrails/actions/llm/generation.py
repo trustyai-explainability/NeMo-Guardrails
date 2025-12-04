@@ -887,9 +887,22 @@ class LLMGenerationActions:
         # of course, it does not work when passed as context in `run_output_rails_in_streaming`
         # streaming_handler is set when stream_async method is used
 
+        has_streaming_handler = streaming_handler is not None
+        has_output_streaming = (
+            self.config.rails.output.streaming
+            and self.config.rails.output.streaming.enabled
+        )
+        log.info(
+            f"generate_bot_message: streaming_handler={has_streaming_handler}, output.streaming={has_output_streaming}"
+        )
         # if streaming_handler and len(self.config.rails.output.flows) > 0:
-        if streaming_handler and self.config.rails.output.streaming.enabled:
+        if streaming_handler and has_output_streaming:
+            log.info("Setting skip_output_rails = True")
             context_updates["skip_output_rails"] = True
+        else:
+            log.info(
+                f"NOT setting skip_output_rails: streaming_handler={has_streaming_handler}, output.streaming={has_output_streaming}"
+            )
 
         if bot_intent in self.config.bot_messages:
             # Choose a message randomly from self.config.bot_messages[bot_message]
@@ -970,7 +983,9 @@ class LLMGenerationActions:
                                 new_event_dict("BotMessage", text=text)
                             )
 
-                            return ActionResult(events=output_events)
+                            return ActionResult(
+                                events=output_events, context_updates=context_updates
+                            )
                         else:
                             if streaming_handler:
                                 await streaming_handler.push_chunk(
@@ -987,7 +1002,9 @@ class LLMGenerationActions:
                                 )
                             output_events.append(bot_message_event)
 
-                            return ActionResult(events=output_events)
+                            return ActionResult(
+                                events=output_events, context_updates=context_updates
+                            )
 
             # If we are in passthrough mode, we just use the input for prompting
             if self.config.passthrough:

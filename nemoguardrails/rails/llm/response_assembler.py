@@ -1,3 +1,18 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Response assembler for generating GenerationResponse objects."""
 
 import logging
@@ -56,9 +71,12 @@ class ResponseAssembler:
             A GenerationResponse object.
         """
         # Extract responses and metadata from events
-        responses, response_tool_calls, response_events, exception = (
-            self._extract_from_events(new_events)
-        )
+        (
+            responses,
+            response_tool_calls,
+            response_events,
+            exception,
+        ) = self._extract_from_events(new_events)
 
         # Build the new message
         new_message = self._build_message(
@@ -175,6 +193,7 @@ class ResponseAssembler:
         Returns:
             A message dictionary.
         """
+        new_message: Dict[str, Any]
         if exception:
             new_message = {"role": "exception", "content": exception}
         else:
@@ -227,25 +246,40 @@ class ResponseAssembler:
 
             if log_options.activated_rails:
                 res.log.activated_rails = _log.activated_rails
+            else:
+                # Keep as empty list when not requested
+                res.log.activated_rails = []
 
             if log_options.llm_calls:
                 res.log.llm_calls = []
                 for activated_rail in _log.activated_rails:
                     for executed_action in activated_rail.executed_actions:
                         res.log.llm_calls.extend(executed_action.llm_calls)
+            else:
+                # Set to empty list instead of None when not requested
+                res.log.llm_calls = []
 
         # Include internal events if requested
         if log_options and log_options.internal_events:
             if res.log is None:
                 res.log = GenerationLog()
-            # Note: new_events should be passed separately if needed
-            # res.log.internal_events = new_events
+            res.log.internal_events = all_events
+        elif res.log is not None:
+            # Set to empty list instead of None when not requested but log exists
+            res.log.internal_events = []
 
         # Include Colang history if requested
         if log_options and log_options.colang_history:
             if res.log is None:
                 res.log = GenerationLog()
             res.log.colang_history = get_colang_history(all_events)
+
+        # Normalize list fields: ensure they're empty lists instead of None when log exists
+        if res.log is not None:
+            if res.log.llm_calls is None:
+                res.log.llm_calls = []
+            if res.log.internal_events is None:
+                res.log.internal_events = []
 
         # Include raw LLM output if requested
         if gen_options and gen_options.llm_output:
@@ -302,9 +336,12 @@ class ResponseAssembler:
         Returns:
             A message dictionary or content string.
         """
-        responses, response_tool_calls, response_events, exception = (
-            self._extract_from_events(new_events)
-        )
+        (
+            responses,
+            response_tool_calls,
+            response_events,
+            exception,
+        ) = self._extract_from_events(new_events)
 
         new_message = self._build_message(
             responses, response_tool_calls, response_events, exception

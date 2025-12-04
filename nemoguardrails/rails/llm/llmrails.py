@@ -60,6 +60,7 @@ from nemoguardrails.rails.llm.kb_builder import KnowledgeBaseBuilder
 from nemoguardrails.rails.llm.model_factory import ModelFactory
 from nemoguardrails.rails.llm.options import (
     GenerationOptions,
+    GenerationRailsOptions,
     GenerationResponse,
 )
 from nemoguardrails.rails.llm.response_assembler import ResponseAssembler
@@ -328,14 +329,22 @@ class LLMRails:
         llm_stats_var.set(llm_stats)
 
         # Translate messages to events
-        events = self.event_translator.messages_to_events(messages, state)
+        if messages is None:
+            raise ValueError("messages must be provided")
+        else:
+            events = self.event_translator.messages_to_events(messages, state)
 
         # Generate new events using runtime orchestrator
         try:
-            new_events, output_state, processing_log = (
-                await self.runtime_orchestrator.generate_events(
-                    events=events, state=state
-                )
+            log.info(
+                f"DEBUG: Calling generate_events with state containing skip_output_rails: {state.get('skip_output_rails') if isinstance(state, dict) else 'state is not dict'}"
+            )
+            (
+                new_events,
+                output_state,
+                processing_log,
+            ) = await self.runtime_orchestrator.generate_events(
+                events=events, state=state
             )
         except Exception as e:
             log.error("Error in generate_async: %s", e, exc_info=True)
@@ -397,14 +406,31 @@ class LLMRails:
             )
 
             # Handle tracing if enabled
-            if self.config.tracing.enabled:
-                await self._handle_tracing(messages, res, gen_options)
+            if self.config.tracing.enabled and messages is not None:
+                await self._handle_tracing(
+                    messages, res, gen_options, processing_log, all_events
+                )
 
             return res
         else:
-            return self.response_assembler.assemble_simple_response(
+            simple_res = self.response_assembler.assemble_simple_response(
                 new_events=new_events, prompt=prompt
             )
+
+            # Handle tracing if enabled (even when options is None)
+            if self.config.tracing.enabled and messages is not None:
+                # Convert simple response to GenerationResponse for tracing
+                if isinstance(simple_res, dict):
+                    trace_res = GenerationResponse(response=[simple_res], log=None)
+                else:
+                    trace_res = GenerationResponse(response=simple_res, log=None)
+                await self._handle_tracing(
+                    messages, trace_res, None, processing_log, all_events
+                )
+                # Return GenerationResponse when tracing is enabled
+                return trace_res
+
+            return simple_res
 
     def _process_options(
         self,
@@ -444,9 +470,14 @@ class LLMRails:
         self,
         messages: List[dict],
         res: GenerationResponse,
-        gen_options: GenerationOptions,
+        gen_options: Optional[GenerationOptions],
+        processing_log: List[dict],
+        all_events: List[dict],
     ):
         """Handle tracing export."""
+        from nemoguardrails.actions.llm.utils import get_colang_history
+        from nemoguardrails.logging.processing_log import compute_generation_log
+        from nemoguardrails.rails.llm.options import GenerationLog
         from nemoguardrails.tracing import Tracer
 
         span_format = getattr(self.config.tracing, "span_format", "opentelemetry")
@@ -454,13 +485,39 @@ class LLMRails:
             self.config.tracing, "enable_content_capture", False
         )
 
-        tracer = Tracer(
-            input=messages,
-            response=res,
-            adapters=self._log_adapters,
-            span_format=span_format,
-            enable_content_capture=enable_content_capture,
-        )
+        # If response.log is None but tracing is enabled, create a temporary log for tracing
+        # without attaching it to the response (to avoid mutating user's response)
+        if res.log is None:
+            # Create a log from processing_log for tracing purposes
+            _log = compute_generation_log(processing_log)
+            temp_log = GenerationLog()
+            temp_log.stats = _log.stats
+            temp_log.activated_rails = _log.activated_rails or []
+            # Collect llm_calls from activated_rails
+            temp_log.llm_calls = []
+            for activated_rail in _log.activated_rails or []:
+                for executed_action in activated_rail.executed_actions:
+                    temp_log.llm_calls.extend(executed_action.llm_calls)
+            # Include internal events and colang history for comprehensive tracing
+            temp_log.internal_events = all_events
+            temp_log.colang_history = get_colang_history(all_events)
+            # Create a temporary response with the log for tracing
+            temp_response = GenerationResponse(response=res.response, log=temp_log)
+            tracer = Tracer(
+                input=messages,
+                response=temp_response,
+                adapters=self._log_adapters,
+                span_format=span_format,
+                enable_content_capture=enable_content_capture,
+            )
+        else:
+            tracer = Tracer(
+                input=messages,
+                response=res,
+                adapters=self._log_adapters,
+                span_format=span_format,
+                enable_content_capture=enable_content_capture,
+            )
         await tracer.export_async()
 
     def generate(
@@ -533,11 +590,34 @@ class LLMRails:
         # Create properly managed task with exception handling
         async def _generation_task():
             try:
+                # When output rails streaming is enabled, we need to skip the normal
+                # output rails execution during the main flow, as they will be run
+                # separately in _run_output_rails_in_streaming
+                generation_options = options
+                if (
+                    self.config.rails.output.streaming
+                    and self.config.rails.output.streaming.enabled
+                ):
+                    # Disable output rails in generation_options so the llm_flows.co check prevents them from running
+                    if generation_options is None:
+                        generation_options = GenerationOptions(
+                            rails=GenerationRailsOptions(output=False)
+                        )
+                    elif isinstance(generation_options, dict):
+                        generation_options = dict(generation_options)
+                        if "rails" not in generation_options:
+                            generation_options["rails"] = {}
+                        generation_options["rails"]["output"] = False
+                    else:
+                        # It's a GenerationOptions object
+                        generation_options = generation_options.model_copy(deep=True)
+                        generation_options.rails.output = False
+
                 await self.generate_async(
                     prompt=prompt,
                     messages=messages,
                     streaming_handler=streaming_handler,
-                    options=options,
+                    options=generation_options,
                     state=state,
                 )
             except Exception as e:
@@ -585,14 +665,216 @@ class LLMRails:
         stream_first: Optional[bool] = None,
     ) -> AsyncIterator[str]:
         """Run output rails in streaming mode."""
-        # Implementation would be similar to original, but keeping it simple for now
-        # This is complex and would require the full streaming logic from the original file
-        # For the refactor, we're keeping this as a stub that delegates to the original logic
+        from nemoguardrails.context import explain_info_var
+        from nemoguardrails.rails.llm.buffer import ChunkBatch
 
-        # For now, just return the streaming handler
-        # Full implementation would buffer, check rails, and yield appropriately
-        async for chunk in streaming_handler:
-            yield chunk
+        # Ensure explain_info_var is set so LLM calls during streaming output rails
+        # are tracked properly. Use self.explain_info if available, otherwise ensure
+        # it's created and set in the context. We need to ensure both reference the
+        # same object so LLM calls are tracked correctly.
+        if self.explain_info is None:
+            self.explain_info = self._ensure_explain_info()
+        # Always set the context variable to point to self.explain_info
+        explain_info_var.set(self.explain_info)
+
+        # Get buffer strategy from config
+        buffer_strategy = get_buffer_strategy(output_rails_streaming_config)
+
+        # Determine stream_first behavior
+        should_stream_first = (
+            stream_first
+            if stream_first is not None
+            else output_rails_streaming_config.stream_first
+        )
+
+        # Get output flows
+        output_flows = self.config.rails.output.flows or []
+        is_parallel = self.config.rails.output.parallel
+
+        # Get action details for each flow if parallel
+        flows_with_params = {}
+        if is_parallel and output_flows:
+            try:
+                flows = self.config.flows
+                for flow_id in output_flows:
+                    try:
+                        action_name, action_params = get_action_details_from_flow_id(
+                            flow_id, flows
+                        )
+                        flows_with_params[flow_id] = {
+                            "action_name": action_name,
+                            "params": action_params,
+                        }
+                    except (ValueError, KeyError) as e:
+                        log.warning(
+                            f"Could not get action details for flow {flow_id}: {e}"
+                        )
+            except Exception as e:
+                log.error(f"Error getting flow details: {e}")
+
+        # Process stream using buffer strategy
+        log.info("Starting to process stream with buffer strategy")
+        batch_count = 0
+        async for chunk_batch in buffer_strategy.process_stream(streaming_handler):
+            batch_count += 1
+            log.info(
+                f"Received chunk_batch #{batch_count} with {len(chunk_batch.user_output_chunks)} chunks"
+            )
+            # Format the processing context
+            processing_text = buffer_strategy.format_chunks(
+                chunk_batch.processing_context
+            )
+
+            # If stream_first is True, yield chunks immediately before checking rails
+            if should_stream_first:
+                for chunk in chunk_batch.user_output_chunks:
+                    yield chunk
+
+            # Create events with bot_message for rail processing
+            events = []
+            if messages:
+                events.extend(self.event_translator.messages_to_events(messages))
+            events.append(
+                {
+                    "type": "BotMessage",
+                    "text": processing_text,
+                }
+            )
+            # Add context update so actions can access bot_message
+            log.info(
+                f"Streaming output rail batch #{batch_count}: processing_text = {repr(processing_text)}"
+            )
+            events.append(
+                {
+                    "type": "ContextUpdate",
+                    "data": {"bot_message": processing_text},
+                }
+            )
+
+            # Run output rails
+            blocked = False
+            blocking_rail = None
+            internal_error = None
+
+            if is_parallel and flows_with_params:
+                # Run parallel rails (only available in Colang 1.0)
+                if hasattr(self.runtime, "_run_output_rails_in_parallel_streaming"):
+                    result = await self.runtime._run_output_rails_in_parallel_streaming(  # type: ignore[attr-defined]
+                        flows_with_params, events
+                    )
+                else:
+                    raise RuntimeError(
+                        "Parallel streaming output rails are only supported in Colang 1.0"
+                    )
+                if result.events:
+                    event = result.events[0]
+                    if event.get("error_type") == "internal_error":
+                        internal_error = event.get("error_message")
+                        blocked = True
+                        blocking_rail = event.get("flow_id")
+                    elif event.get("intent") == "stop":
+                        blocked = True
+                        blocking_rail = event.get("flow_id")
+            else:
+                # Run sequential rails
+                for flow_id in output_flows:
+                    try:
+                        # Ensure explain_info_var is set before processing events
+                        # so LLM calls are tracked properly
+                        if self.explain_info is None:
+                            self.explain_info = self._ensure_explain_info()
+                        explain_info_var.set(self.explain_info)
+
+                        # Create start event
+                        start_event = {
+                            "type": "StartOutputRail",
+                            "flow_id": flow_id,
+                        }
+                        rail_events = events + [start_event]
+
+                        # Process the rail
+                        (
+                            new_events,
+                            _,
+                        ) = await self.runtime_orchestrator.process_events_async(
+                            rail_events, blocking=True
+                        )
+
+                        # Check if rail blocked (look for stop intent or exception)
+                        for event in new_events:
+                            if (
+                                event.get("type") == "BotIntent"
+                                and event.get("intent") == "stop"
+                            ):
+                                blocked = True
+                                blocking_rail = flow_id
+                                break
+                            elif event.get("type", "").endswith("Exception"):
+                                blocked = True
+                                blocking_rail = flow_id
+                                break
+                            # Also check for action results with output_mapping
+                            elif event.get("type") == "InternalSystemActionFinished":
+                                action_name = event.get("action_name")
+                                return_value = event.get("return_value")
+                                log.info(
+                                    f"Sequential rail {flow_id}: action {action_name} returned {return_value}"
+                                )
+                                if action_name and return_value is not None:
+                                    action_func = (
+                                        self.runtime.action_dispatcher.get_action(
+                                            action_name
+                                        )
+                                    )
+                                    if action_func:
+                                        is_blocked = is_output_blocked(
+                                            return_value, action_func
+                                        )
+                                        log.info(
+                                            f"Action {action_name} output_blocked={is_blocked}"
+                                        )
+                                        if is_blocked:
+                                            blocked = True
+                                            blocking_rail = flow_id
+                                            break
+
+                        if blocked:
+                            break
+                    except Exception as e:
+                        log.error(f"Error in sequential rail {flow_id}: {e}")
+                        blocked = True
+                        blocking_rail = flow_id
+                        internal_error = str(e)
+                        break
+
+            # If blocked, yield error and stop
+            if blocked:
+                # Create error message
+                if internal_error:
+                    error_dict = {
+                        "error": {
+                            "message": f"Internal error in {blocking_rail} rail: {internal_error}",
+                            "type": "internal_error",
+                            "param": blocking_rail,
+                            "code": "rail_execution_failure",
+                        }
+                    }
+                else:
+                    error_dict = {
+                        "error": {
+                            "message": f"Blocked by {blocking_rail} rails.",
+                            "type": "guardrails_violation",
+                            "param": blocking_rail,
+                            "code": "content_blocked",
+                        }
+                    }
+                yield json.dumps(error_dict)
+                return
+
+            # If not blocked and stream_first is False, yield chunks after rails check
+            if not should_stream_first:
+                for chunk in chunk_batch.user_output_chunks:
+                    yield chunk
 
     async def generate_events_async(self, events: List[dict]) -> List[dict]:
         """Generate the next events based on the provided history."""
@@ -708,6 +990,20 @@ class LLMRails:
             self.explain_info = self._ensure_explain_info()
         return self.explain_info
 
+    def _prepare_model_kwargs(self, model_config) -> dict:
+        """Prepare kwargs for model initialization, including API key from environment.
+
+        This method is maintained for backwards compatibility.
+        It delegates to ModelFactory._prepare_model_kwargs.
+
+        Args:
+            model_config: The model configuration object.
+
+        Returns:
+            Dictionary of kwargs for model initialization.
+        """
+        return self.model_factory._prepare_model_kwargs(model_config)
+
     def __getstate__(self):
         return {"config": self.config}
 
@@ -717,3 +1013,12 @@ class LLMRails:
         else:
             config = state["config"]
         self.__init__(config=config, verbose=False)
+
+
+# Re-export for backwards compatibility
+__all__ = [
+    "LLMRails",
+    "get_action_details_from_flow_id",
+    "GenerationOptions",
+    "GenerationResponse",
+]

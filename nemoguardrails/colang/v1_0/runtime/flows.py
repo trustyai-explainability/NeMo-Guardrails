@@ -15,6 +15,7 @@
 
 """A simplified modeling of the CoFlows engine."""
 
+import logging
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
@@ -24,6 +25,8 @@ from typing import Dict, List, Optional
 from nemoguardrails.colang.v1_0.runtime.eval import eval_expression
 from nemoguardrails.colang.v1_0.runtime.sliding import slide
 from nemoguardrails.utils import new_event_dict, new_uuid
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -356,7 +359,15 @@ def compute_next_state(state: State, event: dict) -> State:
     if event["type"] == "ContextUpdate":
         # TODO: add support to also remove keys from the context.
         #  maybe with a special context key e.g. "__remove__": ["key1", "key2"]
+        if "skip_output_rails" in event["data"]:
+            log.info(
+                f"ContextUpdate setting skip_output_rails={event['data']['skip_output_rails']}"
+            )
         state.context.update(event["data"])
+        if "skip_output_rails" in state.context:
+            log.info(
+                f"After update, context skip_output_rails={state.context.get('skip_output_rails')}"
+            )
         state.context_updates = {}
         state.next_step = None
         return state
@@ -414,6 +425,12 @@ def compute_next_state(state: State, event: dict) -> State:
             # with 0.9 so that flows that decide on the current event have a higher priority.
             _record_next_step(new_state, flow_state, flow_config, priority_modifier=0.9)
             continue
+
+        # Debug logging for BotMessage event and skip_output_rails
+        if event["type"] == "BotMessage":
+            log.info(
+                f"BotMessage event processing for flow '{flow_config.id}', skip_output_rails in context: {flow_state.context.get('skip_output_rails', 'NOT SET')}"
+            )
 
         # If we're at a branching point, we look at all individual heads.
         matching_head = None

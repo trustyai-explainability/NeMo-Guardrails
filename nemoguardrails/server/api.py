@@ -197,8 +197,7 @@ class RequestBody(BaseModel):
     )
     config_ids: Optional[List[str]] = Field(
         default=None,
-        description="The list of configuration ids to be used. "
-        "If set, the configurations will be combined.",
+        description="The list of configuration ids to be used. If set, the configurations will be combined.",
         # alias="guardrails",
         validate_default=True,
     )
@@ -592,8 +591,7 @@ def start_auto_reload_monitoring():
     except ImportError:
         # Since this is running in a separate thread, we just print the error.
         print(
-            "The auto-reload feature requires `watchdog`. "
-            "Please install using `pip install watchdog`."
+            "The auto-reload feature requires `watchdog`. Please install using `pip install watchdog`."
         )
         # Force close everything.
         os._exit(-1)

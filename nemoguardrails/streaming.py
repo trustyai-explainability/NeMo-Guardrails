@@ -259,7 +259,7 @@ class StreamingHandler(AsyncCallbackHandler, AsyncIterator):
 
     async def push_chunk(
         self,
-        chunk: Union[str, GenerationChunk, AIMessageChunk, ChatGenerationChunk, None],
+        chunk: Union[str, GenerationChunk, AIMessageChunk, ChatGenerationChunk, Any],
         generation_info: Optional[Dict[str, Any]] = None,
     ):
         """Push a new chunk to the stream."""

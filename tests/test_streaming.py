@@ -16,6 +16,7 @@
 import asyncio
 import json
 import math
+from typing import Optional
 
 import pytest
 
@@ -283,15 +284,18 @@ def output_rails_streaming_config():
         define flow
           user express greeting
           bot tell joke
+
+        define flow self check output
+          execute self_check_output
         """,
     )
 
 
 @action(is_system_action=True, output_mapping=lambda result: not result)
-def self_check_output(**params):
+def self_check_output(context: Optional[dict] = None):
     """A dummy self check action that checks if the bot message contains the BLOCK keyword."""
-    if params.get("context", {}).get("bot_message"):
-        bot_message_chunk = params.get("context", {}).get("bot_message")
+    if context and context.get("bot_message"):
+        bot_message_chunk = context.get("bot_message")
         if "BLOCK" in bot_message_chunk:
             return False
 

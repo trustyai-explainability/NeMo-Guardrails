@@ -1,20 +1,25 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Rails API - Main facade for NeMo Guardrails functionality."""
 
 import asyncio
 import logging
 import threading
 import time
-from typing import (
-    Any,
-    AsyncIterator,
-    Callable,
-    Dict,
-    List,
-    Optional,
-    Tuple,
-    Type,
-    Union,
-)
+from typing import Any, AsyncIterator, Callable, Dict, List, Optional, Type, Union
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.language_models.llms import BaseLLM
@@ -25,10 +30,6 @@ from nemoguardrails.actions.llm.utils import get_colang_history
 from nemoguardrails.actions.v2_x.generation import LLMGenerationActionsV2dotx
 from nemoguardrails.colang.v1_0.runtime.runtime import Runtime
 from nemoguardrails.colang.v2_x.runtime.flows import State
-from nemoguardrails.colang.v2_x.runtime.serialization import (
-    json_to_state,
-    state_to_json,
-)
 from nemoguardrails.context import (
     explain_info_var,
     generation_options_var,
@@ -43,20 +44,15 @@ from nemoguardrails.logging.stats import LLMStats
 from nemoguardrails.logging.verbose import set_verbose
 from nemoguardrails.patch_asyncio import check_sync_call_from_async_loop
 from nemoguardrails.rails.llm.config import RailsConfig
-from nemoguardrails.rails.llm.config_loader import ConfigLoader
 from nemoguardrails.rails.llm.event_translator import EventTranslator
 from nemoguardrails.rails.llm.kb_builder import KnowledgeBaseBuilder
 from nemoguardrails.rails.llm.model_factory import ModelFactory
-from nemoguardrails.rails.llm.options import (
-    GenerationOptions,
-    GenerationResponse,
-)
+from nemoguardrails.rails.llm.options import GenerationOptions, GenerationResponse
 from nemoguardrails.rails.llm.response_assembler import ResponseAssembler
 from nemoguardrails.rails.llm.runtime_orchestrator import RuntimeOrchestrator
 from nemoguardrails.streaming import END_OF_STREAM, StreamingHandler
-from nemoguardrails.utils import (
-    get_or_create_event_loop,
-)
+from nemoguardrails.utils import get_or_create_event_loop
+from nemoguardrails.colang.v2_x.runtime.serialization import json_to_state
 
 log = logging.getLogger(__name__)
 
@@ -300,14 +296,19 @@ class RailsAPI:
         llm_stats_var.set(llm_stats)
 
         # Translate messages to events
-        events = self.event_translator.messages_to_events(messages, state)
+        if messages is None:
+            raise ValueError("messages must be provided")
+        else:
+            events = self.event_translator.messages_to_events(messages, state)
 
         # Generate new events using runtime orchestrator
         try:
-            new_events, output_state, processing_log = (
-                await self.runtime_orchestrator.generate_events(
-                    events=events, state=state
-                )
+            (
+                new_events,
+                output_state,
+                processing_log,
+            ) = await self.runtime_orchestrator.generate_events(
+                events=events, state=state
             )
         except Exception as e:
             log.error("Error in generate_async: %s", e, exc_info=True)
@@ -321,7 +322,7 @@ class RailsAPI:
                 error_dict = extract_error_json(error_message)
                 error_payload = json.dumps(error_dict)
                 await streaming_handler.push_chunk(error_payload)
-                await streaming_handler.push_chunk(END_OF_STREAM)
+                await streaming_handler.push_chunk(END_OF_STREAM)  # type: ignore
             raise
 
         # Update event translator cache for Colang 1.0
@@ -358,7 +359,7 @@ class RailsAPI:
         # Close streaming handler if present
         streaming_handler = streaming_handler_var.get()
         if streaming_handler:
-            await streaming_handler.push_chunk(END_OF_STREAM)
+            await streaming_handler.push_chunk(END_OF_STREAM)  # type: ignore
 
         # Assemble response
         if gen_options:
@@ -373,7 +374,7 @@ class RailsAPI:
 
             # Handle tracing if enabled
             if self.config.tracing.enabled:
-                await self._handle_tracing(messages, res, gen_options)
+                await self._handle_tracing(messages, res)
 
             return res
         else:
@@ -414,16 +415,14 @@ class RailsAPI:
 
     async def _handle_tracing(
         self,
-        messages: List[dict],
+        messages: List[dict[str, Any]],
         res: GenerationResponse,
-        gen_options: GenerationOptions,
     ):
         """Handle tracing export.
 
         Args:
             messages: Input messages.
             res: Generation response.
-            gen_options: Generation options.
         """
         from nemoguardrails.tracing import Tracer
 
@@ -469,7 +468,6 @@ class RailsAPI:
         options: Optional[Union[dict, GenerationOptions]] = None,
         state: Optional[Union[dict, State]] = None,
         include_generation_metadata: Optional[bool] = False,
-        generator: Optional[AsyncIterator[str]] = None,
     ) -> AsyncIterator[str]:
         """Stream tokens from the LLM.
 

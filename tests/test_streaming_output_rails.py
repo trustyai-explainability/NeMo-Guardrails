@@ -18,7 +18,7 @@
 import asyncio
 import json
 from json.decoder import JSONDecodeError
-from typing import AsyncIterator
+from typing import AsyncIterator, Optional
 
 import pytest
 
@@ -57,6 +57,9 @@ def output_rails_streaming_config():
         define flow
           user express greeting
           bot tell joke
+
+        define flow self check output
+          execute self_check_output
         """,
     )
 
@@ -83,6 +86,9 @@ def output_rails_streaming_config_default():
         define flow
           user express greeting
           bot tell joke
+
+        define flow self check output
+          execute self_check_output
         """,
     )
 
@@ -100,11 +106,11 @@ async def test_stream_async_streaming_enabled(output_rails_streaming_config):
 
 
 @action(is_system_action=True, output_mapping=lambda result: not result)
-def self_check_output(**params):
+def self_check_output(context: Optional[dict] = None):
     """A dummy self check action that checks if the bot message contains the BLOCK keyword."""
 
-    if params.get("context", {}).get("bot_message"):
-        bot_message_chunk = params.get("context", {}).get("bot_message")
+    if context and context.get("bot_message"):
+        bot_message_chunk = context.get("bot_message")
         print(f"bot_message_chunk: {bot_message_chunk}")
         if "BLOCK" in bot_message_chunk:
             return False
@@ -322,10 +328,8 @@ async def test_external_generator_with_output_rails_blocked():
     rails = LLMRails(config)
 
     @action(name="self_check_output")
-    async def self_check_output(**kwargs):
-        bot_message = kwargs.get(
-            "bot_message", kwargs.get("context", {}).get("bot_message", "")
-        )
+    async def self_check_output(context: Optional[dict] = None):
+        bot_message = context.get("bot_message", "") if context else ""
         # block if message contains "offensive" or "idiot"
         if "offensive" in bot_message.lower() or "idiot" in bot_message.lower():
             return False

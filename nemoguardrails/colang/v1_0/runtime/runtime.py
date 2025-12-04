@@ -523,6 +523,9 @@ class RuntimeV1_0(Runtime):
             flows_with_params: Dictionary mapping flow_id to {"action_name": str, "params": dict}
             events: The events list for context
         """
+        # Compute context from events so actions can access bot_message
+        context = compute_context(events)
+
         tasks = []
 
         async def run_single_rail(flow_id: str, action_info: dict) -> tuple:
@@ -532,8 +535,11 @@ class RuntimeV1_0(Runtime):
                 action_name = action_info["action_name"]
                 params = action_info["params"]
 
+                # Merge context into params so actions have access to bot_message
+                params_with_context = {**params, "context": context}
+
                 result_tuple = await self.action_dispatcher.execute_action(
-                    action_name, params
+                    action_name, params_with_context
                 )
                 result, status = result_tuple
 
@@ -731,10 +737,19 @@ class RuntimeV1_0(Runtime):
         return_events = []
         context_updates = {}
 
+        if action_name == "generate_bot_message":
+            log.info(
+                f"DEBUG: generate_bot_message returned, isinstance(ActionResult)={isinstance(result, ActionResult)}"
+            )
+
         if isinstance(result, ActionResult):
             return_value = result.return_value
             return_events = result.events
             context_updates.update(result.context_updates)
+            if action_name == "generate_bot_message":
+                log.info(
+                    f"generate_bot_message ActionResult: context_updates={context_updates}, skip_output_rails={'skip_output_rails' in context_updates}"
+                )
 
         # If we have an action result key, we also record the update.
         if action_result_key:

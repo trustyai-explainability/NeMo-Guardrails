@@ -18,10 +18,10 @@ import os
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
-import nemoguardrails.rails.llm.llmrails
 from nemoguardrails import LLMRails, RailsConfig
 from nemoguardrails.cli.chat import extract_scene_text_content, parse_events_inputs
 from nemoguardrails.colang.v2_x.runtime.flows import State
+from nemoguardrails.rails.llm import runtime_orchestrator
 from nemoguardrails.utils import new_event_dict, new_uuid
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -49,9 +49,7 @@ class ChatInterface:
         asyncio.create_task(self.run())
 
         # Ensure that the semaphore is assigned to the same loop that we just created
-        nemoguardrails.rails.llm.llmrails.process_events_semaphore = asyncio.Semaphore(
-            1
-        )
+        runtime_orchestrator.process_events_semaphore = asyncio.Semaphore(1)
         self.output_summary: list[str] = []
         self.should_terminate = False
         self.enable_input = asyncio.Event()
