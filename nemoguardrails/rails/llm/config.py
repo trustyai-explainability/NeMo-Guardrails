@@ -889,66 +889,45 @@ class GuardrailsAIRailConfig(BaseModel):
                 return _validator
         return None
 
+
 class KServeDetectorConfig(BaseModel):
     """Configuration for single KServe detector."""
-    
-    inference_endpoint: str = Field(
-        description="The KServe API endpoint for the detector"
-    )
-    model_name: Optional[str] = Field(
-        default=None,
-        description="The name of the KServe model"
-    )
-    threshold: float = Field(
-        default=0.5,
-        description="Probability threshold for detection"
-    )
-    timeout: int = Field(
-        default=30,
-        description="HTTP request timeout in seconds"
-    )
+
+    inference_endpoint: str = Field(description="The KServe API endpoint for the detector")
+    model_name: Optional[str] = Field(default=None, description="The name of the KServe model")
+    threshold: float = Field(default=0.5, description="Probability threshold for detection")
+    timeout: int = Field(default=30, description="HTTP request timeout in seconds")
     api_key: Optional[str] = Field(
         default=None,
-        description="Bearer token for authenticating to this detector. If not specified, uses KSERVE_API_KEY environment variable."
+        description="Bearer token for authenticating to this detector. If not specified, uses KSERVE_API_KEY environment variable.",
     )
-    safe_labels: List[int] = Field(
-        default_factory=lambda: [0],
-        description="Class indices considered safe"
-    )
+    safe_labels: List[int] = Field(default_factory=lambda: [0], description="Class indices considered safe")
+
 
 class DetectionsAPIConfig(BaseModel):
     """Configuration for Detections API v1/text/contents detector."""
-    
+
     inference_endpoint: str = Field(
         description="Detections API endpoint URL (e.g., http://service.com/v1/text/contents)"
     )
-    
-    detector_id: str = Field(
-        description="Detector ID to send in detector-id header (e.g., dummy-en-pii-v1)"
-    )
-    
+
+    detector_id: str = Field(description="Detector ID to send in detector-id header (e.g., dummy-en-pii-v1)")
+
     threshold: float = Field(
         default=0.5,
         ge=0.0,
         le=1.0,
-        description="Detection threshold (0.0-1.0). Block if any detection score >= threshold"
+        description="Detection threshold (0.0-1.0). Block if any detection score >= threshold",
     )
-    
-    timeout: int = Field(
-        default=30,
-        gt=0,
-        description="Request timeout in seconds"
-    )
-    
-    api_key: Optional[str] = Field(
-        default=None,
-        description="Optional API key for authentication (Bearer token)"
-    )
-    
+
+    timeout: int = Field(default=30, gt=0, description="Request timeout in seconds")
+
+    api_key: Optional[str] = Field(default=None, description="Optional API key for authentication (Bearer token)")
+
     detector_params: Optional[Dict[str, Any]] = Field(
-        default_factory=dict,
-        description="Optional detector-specific parameters to send in request"
+        default_factory=dict, description="Optional detector-specific parameters to send in request"
     )
+
 
 class TrendMicroRailConfig(BaseModel):
     """Configuration data for the Trend Micro AI Guard API"""
@@ -1115,12 +1094,12 @@ class RailsConfigData(BaseModel):
 
     kserve_detectors: Optional[Dict[str, KServeDetectorConfig]] = Field(
         default_factory=dict,
-        description="Dynamic registry of KServe detectors. Keys are detector names, values are detector configurations."
+        description="Dynamic registry of KServe detectors. Keys are detector names, values are detector configurations.",
     )
 
     detections_api_detectors: Optional[Dict[str, DetectionsAPIConfig]] = Field(
         default_factory=dict,
-        description="Dynamic registry of Detections API detectors. Keys are detector names, values are detector configurations."
+        description="Dynamic registry of Detections API detectors. Keys are detector names, values are detector configurations.",
     )
 
     trend_micro: Optional[TrendMicroRailConfig] = Field(

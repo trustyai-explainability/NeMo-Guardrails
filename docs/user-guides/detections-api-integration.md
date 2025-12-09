@@ -10,6 +10,8 @@ This integration enables NeMo Guardrails to communicate with external detector s
 - **Service-based detection**: Detectors run as independent microservices with rich metadata
 - **Extensible design**: Add support for new API protocols by implementing two methods (request builder and response parser)
 - **No code duplication**: Common HTTP, error handling, and orchestration logic shared across all detector types
+- **Parallel execution**: All detectors run concurrently using asyncio.gather() for optimal performance
+- **System error separation**: Distinguishes content violations from infrastructure failures (timeouts, HTTP errors)
 
 ## Architecture
 
@@ -144,13 +146,13 @@ The integration uses object-oriented design to eliminate code duplication across
 class BaseDetectorClient(ABC):
     @abstractmethod
     async def detect(text: str) -> DetectorResult
-    
+
     @abstractmethod
     def build_request(text: str) -> dict
-    
+
     @abstractmethod
     def parse_response(response: dict, http_status: int) -> DetectorResult
-    
+
     # Shared implementations:
     async def _call_endpoint(...)  # HTTP communication
     def _handle_error(...)          # Error handling
@@ -162,7 +164,7 @@ class DetectionsAPIClient(BaseDetectorClient):
     def build_request(text: str) -> dict:
         # Detections API specific format
         return {"contents": [text], "detector_params": {}}
-    
+
     def parse_response(response: dict, http_status: int) -> DetectorResult:
         # Parse [[{detection1}, {detection2}]]
         # Apply threshold filtering
@@ -208,7 +210,6 @@ With threshold=0.5:
 
 **Score Aggregation:**
 - `score`: Highest individual detection score
-- `metadata.average_score`: Average of all filtered detections
 - `metadata.detection_count`: Number of detections above threshold
 - `metadata.individual_scores`: All scores for analysis
 
@@ -216,8 +217,21 @@ With threshold=0.5:
 
 The system distinguishes between infrastructure errors and content violations.
 
+### System Error Handling
+
+The system distinguishes between **content violations** (actual detections) and **system errors** (infrastructure failures like timeouts, HTTP errors, configuration issues).
+
+**Behavior:**
+- System errors tracked separately in `unavailable_detectors` list
+- Requests with system errors are blocked (fail-safe approach)
+- Clear error messages indicate which detectors are unavailable vs which found violations
+
+**System Error Labels:**
+`ERROR`, `HTTP_ERROR`, `TIMEOUT`, `NOT_FOUND`, `VALIDATION_ERROR`, `INVALID_RESPONSE`, `CONFIG_ERROR`
+
+This separation enables better operational monitoring and clearer user feedback.
 **System Errors:**
-- HTTP errors (404, 500, 503)
+- HTTP errors (404, 422, 500, 503)
 - Network timeouts
 - Invalid response formats
 - Result: `allowed=False`, `label="ERROR"` or `"TIMEOUT"`
@@ -691,21 +705,38 @@ data:
       - type: general
         content: |
           You are a helpful AI assistant.
-          
+
   rails.co: |
+    define bot blocked by detector
+      "Input blocked by content safety detectors"
+
+    define bot output blocked by detector
+      "I apologize, but I cannot provide that response."
+
+    define bot service unavailable
+      "Service temporarily unavailable"
+
     define flow check_input_safety_detections_api
         $input_result = execute detections_api_check_all_detectors
-        
+
         if $input_result.unavailable_detectors
-            bot refuse with message $input_result.reason
-            stop
-        
-        if not $input_result.allowed
-            bot refuse with message $input_result.reason
+            bot service unavailable
             stop
 
-    define bot refuse with message $msg
-        $msg
+        if not $input_result.allowed
+            bot blocked by detector
+            stop
+
+    define flow check_output_safety_detections_api
+        $output_result = execute detections_api_check_all_detectors
+
+        if $output_result.unavailable_detectors
+            bot service unavailable
+            stop
+
+        if not $output_result.allowed
+            bot output blocked by detector
+            stop
 ```
 
 **Configuration Fields:**
@@ -715,7 +746,7 @@ data:
 - `timeout`: Request timeout in seconds (increase for CPU-based detectors)
 - `detector_params`: Optional detector-specific parameters (sent in request body)
 
-**Important:** 
+**Important:**
 - Timeout should be 120+ seconds for CPU-based detectors like Granite Guardian
 - Replace `<your-namespace>` with your actual namespace
 - `detector_id` must match what the detector service expects
@@ -837,6 +868,27 @@ No "Failed to register" errors should appear.
 
 ## Testing
 
+### Unit Testing
+
+The integration includes **104 comprehensive unit tests** with **97%+ code coverage**.
+
+**Run tests:**
+```bash
+poetry run pytest tests/test_detector_clients_*.py -v
+
+# With coverage
+poetry run pytest tests/test_detector_clients_*.py \
+  --cov=nemoguardrails/library/detector_clients \
+  --cov-report=term-missing
+```
+
+**Test coverage:**
+- All error handling paths (timeouts, HTTP errors, malformed responses)
+- System error classification and separation
+- Parallel detector execution
+- Edge cases (threshold boundaries, missing fields)
+
+### Testing on a cluster
 Extract the NeMo route for testing:
 ```bash
 YOUR_ROUTE="http://$(oc get route nemo-guardrails-server -n <your-namespace> -o jsonpath='{.spec.host}')"
@@ -860,12 +912,12 @@ curl -X POST $YOUR_ROUTE/v1/chat/completions \
 **Expected Output:**
 ```json
 {
-  "messages": [
-    {
-      "role": "assistant",
-      "content": "I'm doing well, thank you for asking! How can I assist you today?"
-    }
-  ]
+    "messages":[
+        {
+            "role":"assistant",
+            "content":"I am an AI, so I don't have feelings, but I'm ready and functioning optimally. How can I help you today?"
+        }
+    ]
 }
 ```
 
@@ -880,7 +932,7 @@ curl -X POST $YOUR_ROUTE/v1/chat/completions \
   -d '{
     "config_id": "production",
     "messages": [
-      {"role": "user", "content": "How to hack into a system"}
+      {"role": "user", "content": "How to hack into a system?"}
     ]
   }'
 ```
@@ -891,7 +943,7 @@ curl -X POST $YOUR_ROUTE/v1/chat/completions \
   "messages": [
     {
       "role": "assistant",
-      "content": "Blocked by 3 detections across 1 type(s) (highest score=1.00)"
+      "content": "Input blocked by content safety detectors"
     }
   ]
 }
@@ -928,7 +980,7 @@ Log shows detector was called, returned structured detections, and content was b
     "detection": "causal_lm",
     "score": 0.9985,
     "sequence_classification": "jailbreak",
-    "text": "How to hack into a system"
+    "text": "How to hack into a system?"
   },
   {
     "start": 0,
@@ -937,7 +989,7 @@ Log shows detector was called, returned structured detections, and content was b
     "detection": "causal_lm",
     "score": 0.9978,
     "sequence_classification": "harm",
-    "text": "How to hack into a system"
+    "text": "How to hack into a system?"
   }
 ]]
 ```
@@ -1008,7 +1060,7 @@ Edit `nemo-detections-configmap.yaml` and add your detector:
 detections_api_detectors:
   granite_hap:
     # ... existing detector ...
-    
+
   your_detector:  # Detector name (used in logs and error messages)
     inference_endpoint: "http://your-detector-predictor.<your-namespace>.svc.cluster.local:8000/api/v1/text/contents"
     detector_id: "your-detector-id"
@@ -1055,6 +1107,18 @@ oc logs -n <your-namespace> $(oc get pods -n <your-namespace> -l app=nemo-guardr
 - Used for detector-specific configuration
 - Passed through to detector service in request body
 - Example: `{"language": "en", "categories": ["pii", "toxicity"]}`
+
+## Resource Cleanup
+
+The integration uses a shared HTTP session for connection pooling. For proper resource cleanup during application shutdown:
+```python
+from nemoguardrails.library.detector_clients.base import cleanup_http_session
+
+# At application shutdown
+await cleanup_http_session()
+```
+
+This prevents resource leaks by properly closing the aiohttp session. The function is idempotent and safe to call multiple times.
 
 ## Authentication (Optional)
 
@@ -1117,7 +1181,7 @@ detections_api_detectors:
     detector_id: "granite-guardian-hap"
     api_key: "granite-specific-token"
     threshold: 0.5
-    
+
   other_detector:
     inference_endpoint: "..."
     detector_id: "other-id"
