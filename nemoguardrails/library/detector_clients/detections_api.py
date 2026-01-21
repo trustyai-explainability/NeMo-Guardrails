@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -22,6 +22,7 @@ import logging
 from typing import Any, Dict, List
 
 from nemoguardrails.library.detector_clients.base import BaseDetectorClient, DetectorResult
+from nemoguardrails.rails.llm.config import DetectionsAPIConfig
 
 log = logging.getLogger(__name__)
 
@@ -35,7 +36,7 @@ class DetectionsAPIClient(BaseDetectorClient):
     - Response: [[{detection1}, {detection2}, ...]]
     """
 
-    def __init__(self, config: Any, detector_name: str):
+    def __init__(self, config: DetectionsAPIConfig, detector_name: str):
         """
         Initialize Detections API client.
 
@@ -43,9 +44,9 @@ class DetectionsAPIClient(BaseDetectorClient):
             config: DetectionsAPIConfig with endpoint, detector_id, threshold, etc.
         """
         super().__init__(config, detector_name)
-        self.detector_id = getattr(config, "detector_id", "")
-        self.threshold = getattr(config, "threshold", 0.5)
-        self.detector_params = getattr(config, "detector_params", {})
+        self.detector_id = config.detector_id
+        self.threshold = config.threshold
+        self.detector_params = config.detector_params
 
         if not self.detector_id:
             raise ValueError("detector_id is required for DetectionsAPIClient")

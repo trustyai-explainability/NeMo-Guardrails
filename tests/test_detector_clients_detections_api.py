@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -29,6 +29,7 @@ from unittest.mock import Mock, patch
 import pytest
 
 from nemoguardrails.library.detector_clients.detections_api import DetectionsAPIClient
+from nemoguardrails.rails.llm.config import DetectionsAPIConfig
 
 
 class TestDetectionsAPIClientInit:
@@ -56,19 +57,20 @@ class TestDetectionsAPIClientInit:
 
     def test_init_with_defaults(self):
         """Test initialization uses default values when not specified"""
-        from types import SimpleNamespace
-
-        # CORRECTED: Use SimpleNamespace without optional attributes
-        mock_config = SimpleNamespace()
-        mock_config.inference_endpoint = "http://detector.com"
-        mock_config.detector_id = "test-id"
-        # Don't set threshold, detector_params, timeout - getattr will use defaults
+        # Use actual Pydantic config with defaults
+        mock_config = DetectionsAPIConfig(
+            inference_endpoint="http://detector.com",
+            detector_id="test-id",
+            # threshold defaults to 0.5
+            # detector_params defaults to {}
+            # timeout defaults to 30
+        )
 
         client = DetectionsAPIClient(mock_config, "test-detector")
 
-        assert client.threshold == 0.5  # Default
-        assert client.detector_params == {}  # Default
-        assert client.timeout == 30  # Default from BaseDetectorClient
+        assert client.threshold == 0.5  # Default from Pydantic
+        assert client.detector_params == {}  # Default from Pydantic
+        assert client.timeout == 30  # Default from Pydantic
 
     def test_init_missing_detector_id_raises_error(self):
         """Test initialization fails when detector_id is empty string"""

@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -120,20 +120,10 @@ async def detections_api_check_all_detectors(
                 log.debug(f"Checking {source} with Detections API detectors")
                 break
 
-    if not text:
-        log.warning("No message content found in context for detection")
-        return AggregatedDetectorResult(
-            allowed=True,
-            reason="No message content found",
-            blocking_detectors=[],
-            allowing_detectors=[],
-            detector_count=0,
-        ).dict()
-
     if not hasattr(config, "rails") or not hasattr(config.rails, "config"):
         log.warning("Configuration incomplete")
         return AggregatedDetectorResult(
-            allowed=True,
+            allowed=False,
             reason="Configuration incomplete",
             blocking_detectors=[],
             allowing_detectors=[],
@@ -144,7 +134,7 @@ async def detections_api_check_all_detectors(
 
     if not detections_api_detectors:
         return AggregatedDetectorResult(
-            allowed=True,
+            allowed=False,
             reason="No Detections API detectors configured",
             blocking_detectors=[],
             allowing_detectors=[],
@@ -269,21 +259,10 @@ async def detections_api_check_detector(
                 log.debug(f"Checking {source} with Detections API detectors")
                 break
 
-    if not text:
-        log.warning("No message content found in context for detection")
-        return DetectorResult(
-            allowed=True,
-            score=0.0,
-            reason="No message content found",
-            label="NO_CONTENT",
-            detector=detector_name,
-            metadata={},
-        ).dict()
-
     if not hasattr(config, "rails") or not hasattr(config.rails, "config"):
         log.warning("Configuration incomplete")
         return DetectorResult(
-            allowed=True,
+            allowed=False,
             score=0.0,
             reason="Configuration incomplete",
             label="CONFIG_INCOMPLETE",
@@ -295,7 +274,7 @@ async def detections_api_check_detector(
 
     if detector_name not in detections_api_detectors:
         return DetectorResult(
-            allowed=True,
+            allowed=False,
             score=0.0,
             reason=f"Detector '{detector_name}' not configured",
             label="NOT_CONFIGURED",
@@ -307,7 +286,7 @@ async def detections_api_check_detector(
 
     if detector_config is None:
         return DetectorResult(
-            allowed=True,
+            allowed=False,
             score=0.0,
             reason=f"Detector '{detector_name}' has no configuration",
             label="NONE",

@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -21,8 +21,9 @@ All detector implementations must inherit from this class.
 import asyncio
 import logging
 import os
+import ssl
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 import aiohttp
 from pydantic import BaseModel, Field
@@ -71,14 +72,16 @@ class BaseDetectorClient(ABC):
         Initialize detector client with configuration.
 
         Args:
-            config: Detector-specific configuration object
-            detector_name: Name of the detector for logging and error reporting
+            config: Detector-specific configuration object. Must have fields:
+               - inference_endpoint (str): Detector API endpoint URL
+               - timeout (int): Request timeout in seconds
+               - api_key (Optional[str]): Optional authentication token
+            detector_name(str): Name of the detector for logging and error reporting
         """
-        self.config = config
         self.detector_name = detector_name
-        self.endpoint = getattr(config, "inference_endpoint", "")
-        self.timeout = getattr(config, "timeout", 30)
-        self.api_key = getattr(config, "api_key", None)
+        self.endpoint = config.inference_endpoint
+        self.timeout = config.timeout
+        self.api_key = config.api_key
 
     @abstractmethod
     async def detect(self, text: str) -> DetectorResult:
@@ -121,6 +124,48 @@ class BaseDetectorClient(ABC):
         """
         pass
 
+    def _get_ssl_context(self) -> Union[ssl.SSLContext, bool, None]:
+        """
+        Get SSL context for HTTPS connections.
+
+        Supports custom CA certificates and SSL verification control for different
+        deployment environments (development, staging, production).
+
+        Priority order:
+        1. Custom CA certificate file (if DETECTIONS_API_CA_CERT is set)
+        2. SSL verification toggle (if DETECTIONS_API_VERIFY_SSL is set)
+        3. Default system CA certificates
+
+        Environment Variables:
+            DETECTIONS_API_CA_CERT: Path to custom CA certificate file (PEM format)
+                                Common in Kubernetes/OpenShift with mounted secrets
+            DETECTIONS_API_VERIFY_SSL: Set to "false" to disable SSL verification
+                                    WARNING: Only for development/testing!
+
+        Returns:
+            ssl.SSLContext: Custom SSL context with specified CA certificate
+            False: Disable SSL verification (development only)
+            None: Use default system CA certificates
+        """
+        # Check for custom CA certificate file (Kubernetes secret volume)
+        ca_cert_file = os.getenv("DETECTIONS_API_CA_CERT")
+        if ca_cert_file and os.path.exists(ca_cert_file):
+            ssl_context = ssl.create_default_context(cafile=ca_cert_file)
+            log.info(f"Using custom CA certificate from {ca_cert_file}")
+            return ssl_context
+
+        # Option to disable SSL verification (development/testing only)
+        verify_ssl = os.getenv("DETECTIONS_API_VERIFY_SSL", "true").lower()
+        if verify_ssl == "false":
+            log.warning(
+                "SSL verification disabled via DETECTIONS_API_VERIFY_SSL=false. "
+                "This is NOT recommended for production environments!"
+            )
+            return False
+
+        # Default: use system CA certificates
+        return None
+
     async def _call_endpoint(
         self, endpoint: str, payload: Dict[str, Any], timeout: int, headers: Optional[Dict[str, str]] = None
     ) -> tuple[Any, int]:
@@ -146,15 +191,28 @@ class BaseDetectorClient(ABC):
         if _http_session is None:
             async with _session_lock:
                 if _http_session is None:
-                    _http_session = aiohttp.ClientSession()
+                    # Configure SSL context for custom certificates
+                    ssl_context = self._get_ssl_context()
+                    connector = aiohttp.TCPConnector(ssl=ssl_context)
+                    _http_session = aiohttp.ClientSession(connector=connector)
 
         # Build headers
         request_headers = {"Content-Type": "application/json"}
         if headers:
             request_headers.update(headers)
 
-        # Add auth if configured (per-detector key or global env var)
-        token = self.api_key or os.getenv("DETECTIONS_API_KEY")
+        # Add auth if configured (per-detector config, secret file, or env var)
+        if self.api_key:
+            token = self.api_key
+        else:
+            # Check for file-based secret (Kubernetes volume mount)
+            secret_file = os.getenv("DETECTIONS_API_KEY_FILE")
+            if secret_file and os.path.exists(secret_file):
+                with open(secret_file, "r") as f:
+                    token = f.read().strip()
+            else:
+                # Fallback to environment variable
+                token = os.getenv("DETECTIONS_API_KEY")
         if token:
             request_headers["Authorization"] = f"Bearer {token}"
 
@@ -168,10 +226,10 @@ class BaseDetectorClient(ABC):
 
                 if http_status == 200:
                     response_data = await response.json()
-                    return response_data, http_status
                 else:
-                    error_text = await response.text()
-                    raise Exception(f"HTTP {http_status}: {error_text}")
+                    response_data = await response.text()
+
+                return response_data, http_status
 
         except asyncio.TimeoutError:
             raise Exception(f"Request timeout after {timeout}s")
@@ -192,7 +250,7 @@ class BaseDetectorClient(ABC):
         """
         error_message = str(error)
 
-        # Check if it's an HTTP error
+        # Classify error by message content (works with wrapped exceptions)
         if error_message.startswith("HTTP "):
             label = "HTTP_ERROR"
             reason = f"{detector_name} service error: {error_message}"

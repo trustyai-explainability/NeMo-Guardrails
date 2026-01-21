@@ -5,7 +5,7 @@
 This integration enables NeMo Guardrails to communicate with external detector services that implement the Detections API v1/text/contents protocol, providing a standardized interface for content safety checking without requiring detector logic within NeMo.
 
 **Key Features:**
-- **Protocol-agnostic architecture**: Base interface pattern supports multiple detector API protocols (Detections API, KServe V1, future APIs)
+- **Protocol-agnostic architecture**: Base interface pattern supports multiple detector API protocols (Detections API, and future APIs)
 - **Configuration-driven**: Add/remove detectors via ConfigMap updates only
 - **Service-based detection**: Detectors run as independent microservices with rich metadata
 - **Extensible design**: Add support for new API protocols by implementing two methods (request builder and response parser)
@@ -223,7 +223,8 @@ The system distinguishes between **content violations** (actual detections) and 
 
 **Behavior:**
 - System errors tracked separately in `unavailable_detectors` list
-- Requests with system errors are blocked (fail-safe approach)
+- Requests with system errors are **blocked** (fail-closed approach)
+- Configuration errors (missing config, incomplete config) are also **blocked**
 - Clear error messages indicate which detectors are unavailable vs which found violations
 
 **System Error Labels:**
@@ -1199,3 +1200,50 @@ oc sa get-token <service-account-name> -n <your-namespace>
 # For OpenShift AI secured services
 oc whoami -t
 ```
+## Advanced Configuration
+
+### SSL Certificate Support
+
+For services using custom CA certificates (common in OpenShift internal services with self-signed certificates):
+
+**Add to NeMo deployment environment variables:**
+```yaml
+env:
+  - name: DETECTIONS_API_CA_CERT
+    value: /var/secrets/ca-cert.pem
+```
+
+**Mount certificate as volume:**
+```yaml
+volumeMounts:
+  - name: ca-certs
+    mountPath: /var/secrets
+    readOnly: true
+volumes:
+  - name: ca-certs
+    secret:
+      secretName: detector-ca-certs
+```
+
+### File-Based Secrets (Kubernetes/OpenShift)
+
+For production deployments, mount API keys as secret files instead of environment variables for better security:
+
+**Add to NeMo deployment:**
+```yaml
+env:
+  - name: DETECTIONS_API_KEY_FILE
+    value: /var/secrets/api-key
+
+volumeMounts:
+  - name: api-secrets
+    mountPath: /var/secrets
+    readOnly: true
+
+volumes:
+  - name: api-secrets
+    secret:
+      secretName: detector-api-keys
+```
+
+**Token priority:** Per-detector `api_key` > File (`DETECTIONS_API_KEY_FILE`) > Environment variable (`DETECTIONS_API_KEY`)

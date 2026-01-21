@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -23,8 +23,10 @@ Tests cover:
 - HTTP session cleanup
 """
 
+import ssl
 from unittest.mock import AsyncMock, Mock, patch
 
+import aiohttp
 import pytest
 from pydantic import ValidationError
 
@@ -34,6 +36,7 @@ from nemoguardrails.library.detector_clients.base import (
     DetectorResult,
     cleanup_http_session,
 )
+from nemoguardrails.rails.llm.config import DetectionsAPIConfig
 
 
 class TestDetectorResult:
@@ -178,18 +181,19 @@ class TestBaseDetectorClient:
 
     def test_init_with_minimal_config(self):
         """Test initialization with minimal config (using defaults)"""
-        from types import SimpleNamespace
-
-        # Use SimpleNamespace instead of Mock - only has attributes we set
-        mock_config = SimpleNamespace()
-        mock_config.inference_endpoint = "http://test.com"
-        # Don't set timeout or api_key - they won't exist
+        # Use actual Pydantic config with defaults
+        mock_config = DetectionsAPIConfig(
+            inference_endpoint="http://test.com",
+            detector_id="test-id",
+            # timeout defaults to 30
+            # api_key defaults to None
+        )
 
         client = ConcreteDetectorClient(mock_config, "test-detector")
 
         assert client.endpoint == "http://test.com"
-        assert client.timeout == 30  # Default
-        assert client.api_key is None  # Default
+        assert client.timeout == 30  # Default from Pydantic
+        assert client.api_key is None  # Default from Pydantic
 
 
 class TestHandleError:
@@ -403,16 +407,18 @@ class TestCallEndpoint:
 
     @pytest.mark.asyncio
     async def test_post_request_non_200_status(self):
-        """Test non-200 status raises exception"""
-        mock_config = Mock()
-        mock_config.inference_endpoint = "http://test.com"
+        """Test non-200 status returns error status code"""
+        mock_config = DetectionsAPIConfig(inference_endpoint="http://test.com", detector_id="test-id")
 
         client = ConcreteDetectorClient(mock_config, "test-detector")
 
+        # Mock the HTTP response - needs both json() and text()
         mock_response = Mock()
         mock_response.status = 500
-        mock_response.text = AsyncMock(return_value="Internal Server Error")
+        mock_response.json = AsyncMock(return_value={"error": "Internal Server Error"})
+        mock_response.text = AsyncMock(return_value="Internal Server Error")  # ← ADD THIS
 
+        # Mock session.post to return async context manager
         mock_post_cm = AsyncMock()
         mock_post_cm.__aenter__ = AsyncMock(return_value=mock_response)
         mock_post_cm.__aexit__ = AsyncMock(return_value=None)
@@ -421,8 +427,12 @@ class TestCallEndpoint:
         mock_session.post = Mock(return_value=mock_post_cm)
 
         with patch("nemoguardrails.library.detector_clients.base._http_session", mock_session):
-            with pytest.raises(Exception, match="500"):
-                await client._call_endpoint(endpoint="http://test.com/api", payload={"text": "test"}, timeout=30)
+            data, status = await client._call_endpoint(
+                endpoint="http://test.com/api", payload={"text": "test"}, timeout=30
+            )
+
+            assert status == 500
+            assert data == "Internal Server Error"  # ← Returns text, not json for non-200
 
     @pytest.mark.asyncio
     async def test_post_request_with_api_key(self):
@@ -455,12 +465,12 @@ class TestCallEndpoint:
     @pytest.mark.asyncio
     async def test_post_request_with_env_api_key(self):
         """Test fallback to environment variable for API key"""
-        from types import SimpleNamespace
-
-        # CORRECTED: Use SimpleNamespace without api_key attribute
-        mock_config = SimpleNamespace()
-        mock_config.inference_endpoint = "http://test.com"
-        # Don't set api_key - it won't exist, forcing env var lookup
+        # Use actual Pydantic config without api_key (defaults to None)
+        mock_config = DetectionsAPIConfig(
+            inference_endpoint="http://test.com",
+            detector_id="test-id",
+            # api_key defaults to None
+        )
 
         client = ConcreteDetectorClient(mock_config, "test-detector")
 
@@ -482,3 +492,169 @@ class TestCallEndpoint:
         # Verify env var key used
         call_kwargs = mock_session.post.call_args[1]
         assert call_kwargs["headers"]["Authorization"] == "Bearer env-key-456"
+
+
+class TestGetSSLContext:
+    """Tests for BaseDetectorClient._get_ssl_context() method"""
+
+    def test_ssl_context_with_custom_ca_cert(self, tmp_path):
+        """Test SSL context uses custom CA certificate when file exists"""
+        # Create a temporary CA cert file
+        ca_cert_file = tmp_path / "ca-cert.pem"
+        ca_cert_file.write_text("dummy cert content")
+
+        mock_config = DetectionsAPIConfig(inference_endpoint="http://test.com", detector_id="test-id")
+
+        client = ConcreteDetectorClient(mock_config, "test-detector")
+
+        # Mock ssl.create_default_context to avoid needing valid cert
+        with patch.dict("os.environ", {"DETECTIONS_API_CA_CERT": str(ca_cert_file)}):
+            with patch("ssl.create_default_context") as mock_ssl:
+                mock_ssl_context = Mock(spec=ssl.SSLContext)
+                mock_ssl.return_value = mock_ssl_context
+
+                ssl_context = client._get_ssl_context()
+
+        # Should have called create_default_context with the file
+        mock_ssl.assert_called_once_with(cafile=str(ca_cert_file))
+        assert ssl_context == mock_ssl_context
+
+    def test_ssl_context_with_nonexistent_ca_cert_file(self):
+        """Test SSL context returns None when CA cert file doesn't exist"""
+        mock_config = DetectionsAPIConfig(inference_endpoint="http://test.com", detector_id="test-id")
+
+        client = ConcreteDetectorClient(mock_config, "test-detector")
+
+        with patch.dict("os.environ", {"DETECTIONS_API_CA_CERT": "/nonexistent/path/ca-cert.pem"}):
+            ssl_context = client._get_ssl_context()
+
+        # Should fall through to default behavior (None)
+        assert ssl_context is None or ssl_context is False
+
+    def test_ssl_verification_disabled(self):
+        """Test SSL verification can be disabled for development"""
+        mock_config = DetectionsAPIConfig(inference_endpoint="http://test.com", detector_id="test-id")
+
+        client = ConcreteDetectorClient(mock_config, "test-detector")
+
+        with patch.dict("os.environ", {"DETECTIONS_API_VERIFY_SSL": "false"}):
+            ssl_context = client._get_ssl_context()
+
+        # Should return False to disable verification
+        assert ssl_context is False
+
+    def test_ssl_default_system_certificates(self):
+        """Test SSL context returns None for default system CA certificates"""
+        mock_config = DetectionsAPIConfig(inference_endpoint="http://test.com", detector_id="test-id")
+
+        client = ConcreteDetectorClient(mock_config, "test-detector")
+
+        # No environment variables set
+        with patch.dict("os.environ", {}, clear=True):
+            ssl_context = client._get_ssl_context()
+
+        # Should return None for default behavior
+        assert ssl_context is None
+
+
+class TestAPIKeyHandling:
+    """Tests for API key handling in _call_endpoint"""
+
+    @pytest.mark.asyncio
+    async def test_api_key_from_file(self, tmp_path):
+        """Test API key read from file (Kubernetes secret volume)"""
+        # Create temporary API key file
+        api_key_file = tmp_path / "api-key"
+        api_key_file.write_text("file-secret-key-789")
+
+        # Config without api_key (will fall back to file)
+        mock_config = DetectionsAPIConfig(inference_endpoint="http://test.com", detector_id="test-id")
+
+        client = ConcreteDetectorClient(mock_config, "test-detector")
+
+        mock_response = Mock()
+        mock_response.status = 200
+        mock_response.json = AsyncMock(return_value={"result": "success"})
+
+        mock_post_cm = AsyncMock()
+        mock_post_cm.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_post_cm.__aexit__ = AsyncMock(return_value=None)
+
+        mock_session = Mock()
+        mock_session.post = Mock(return_value=mock_post_cm)
+
+        with patch("nemoguardrails.library.detector_clients.base._http_session", mock_session):
+            with patch.dict("os.environ", {"DETECTIONS_API_KEY_FILE": str(api_key_file)}):
+                await client._call_endpoint(endpoint="http://test.com/api", payload={"text": "test"}, timeout=30)
+
+        # Verify Authorization header used file-based key
+        call_kwargs = mock_session.post.call_args[1]
+        assert call_kwargs["headers"]["Authorization"] == "Bearer file-secret-key-789"
+
+    @pytest.mark.asyncio
+    async def test_api_key_file_not_exists(self):
+        """Test fallback to env var when API key file doesn't exist"""
+        mock_config = DetectionsAPIConfig(inference_endpoint="http://test.com", detector_id="test-id")
+
+        client = ConcreteDetectorClient(mock_config, "test-detector")
+
+        mock_response = Mock()
+        mock_response.status = 200
+        mock_response.json = AsyncMock(return_value={"result": "success"})
+
+        mock_post_cm = AsyncMock()
+        mock_post_cm.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_post_cm.__aexit__ = AsyncMock(return_value=None)
+
+        mock_session = Mock()
+        mock_session.post = Mock(return_value=mock_post_cm)
+
+        with patch("nemoguardrails.library.detector_clients.base._http_session", mock_session):
+            with patch.dict(
+                "os.environ",
+                {"DETECTIONS_API_KEY_FILE": "/nonexistent/api-key", "DETECTIONS_API_KEY": "env-var-key-123"},
+            ):
+                await client._call_endpoint(endpoint="http://test.com/api", payload={"text": "test"}, timeout=30)
+
+        # Should fall back to env var
+        call_kwargs = mock_session.post.call_args[1]
+        assert call_kwargs["headers"]["Authorization"] == "Bearer env-var-key-123"
+
+
+class TestHTTPErrors:
+    """Tests for HTTP error handling in _call_endpoint"""
+
+    @pytest.mark.asyncio
+    async def test_client_error_handling(self):
+        """Test aiohttp.ClientError is caught and re-raised"""
+        mock_config = DetectionsAPIConfig(inference_endpoint="http://test.com", detector_id="test-id")
+
+        client = ConcreteDetectorClient(mock_config, "test-detector")
+
+        # Mock session.post to raise ClientError
+        mock_session = Mock()
+        mock_session.post = Mock(side_effect=aiohttp.ClientError("Connection failed"))
+
+        with patch("nemoguardrails.library.detector_clients.base._http_session", mock_session):
+            with pytest.raises(Exception, match="HTTP client error"):
+                await client._call_endpoint(endpoint="http://test.com/api", payload={"text": "test"}, timeout=30)
+
+
+class TestHandleErrorEdgeCases:
+    """Tests for edge cases in _handle_error"""
+
+    def test_handle_generic_error_without_http_or_timeout(self):
+        """Test generic errors that aren't HTTP or timeout related"""
+        mock_config = DetectionsAPIConfig(inference_endpoint="http://test.com", detector_id="test-id")
+
+        client = ConcreteDetectorClient(mock_config, "test-detector")
+
+        # Generic error - not HTTP, not timeout
+        error = ValueError("Invalid input format")
+
+        result = client._handle_error(error, "test-detector")
+
+        assert result.allowed is False
+        assert result.label == "ERROR"
+        assert "Invalid input format" in result.reason
+        assert result.metadata["error"] == "Invalid input format"

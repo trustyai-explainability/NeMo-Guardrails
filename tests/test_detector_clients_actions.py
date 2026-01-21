@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -160,21 +160,6 @@ class TestDetectionsAPICheckAllDetectors:
         assert "No Detections API detectors configured" in result["reason"]
 
     @pytest.mark.asyncio
-    async def test_no_message_content(self):
-        """Test when no user_message or bot_message in context"""
-        mock_config = Mock()
-        mock_config.rails = Mock()
-        mock_config.rails.config = Mock()
-
-        context = {}  # No message fields
-
-        result = await detections_api_check_all_detectors(context=context, config=mock_config)
-
-        assert result["allowed"] is True
-        assert "No message content" in result["reason"]
-        assert result["detector_count"] == 0
-
-    @pytest.mark.asyncio
     async def test_user_message_string(self):
         """Test extraction of user_message as string"""
         mock_config = Mock()
@@ -253,7 +238,7 @@ class TestDetectionsAPICheckAllDetectors:
 
         result = await detections_api_check_all_detectors(context=context, config=mock_config)
 
-        assert result["allowed"] is True
+        assert result["allowed"] is False
         # CORRECTED: Match actual string from code
         assert "Configuration incomplete" in result["reason"]
 
@@ -267,7 +252,7 @@ class TestDetectionsAPICheckAllDetectors:
 
         result = await detections_api_check_all_detectors(context=context, config=mock_config)
 
-        assert result["allowed"] is True
+        assert result["allowed"] is False
         # CORRECTED: Match actual string from code
         assert "Configuration incomplete" in result["reason"]
 
@@ -283,7 +268,7 @@ class TestDetectionsAPICheckAllDetectors:
 
         result = await detections_api_check_all_detectors(context=context, config=mock_config)
 
-        assert result["allowed"] is True
+        assert result["allowed"] is False
         assert "No Detections API detectors configured" in result["reason"]
         assert result["detector_count"] == 0
 
@@ -549,17 +534,6 @@ class TestDetectionsAPICheckDetector:
         assert result["label"] == "NO_CONFIG"
 
     @pytest.mark.asyncio
-    async def test_no_message_content(self):
-        """Test when no message in context"""
-        mock_config = Mock()
-
-        result = await detections_api_check_detector(context={}, config=mock_config, detector_name="toxicity")
-
-        assert result["allowed"] is True
-        assert "No message content" in result["reason"]
-        assert result["label"] == "NO_CONTENT"
-
-    @pytest.mark.asyncio
     async def test_config_incomplete(self):
         """Test when config structure is incomplete"""
         mock_config = Mock(spec=[])  # No rails attribute
@@ -568,7 +542,7 @@ class TestDetectionsAPICheckDetector:
             context={"user_message": "test"}, config=mock_config, detector_name="toxicity"
         )
 
-        assert result["allowed"] is True
+        assert result["allowed"] is False
         # CORRECTED: Match actual string from code
         assert "Configuration incomplete" in result["reason"]
         assert result["label"] == "CONFIG_INCOMPLETE"
@@ -591,7 +565,7 @@ class TestDetectionsAPICheckDetector:
             detector_name="toxicity",  # Not in config
         )
 
-        assert result["allowed"] is True
+        assert result["allowed"] is False
         assert result["label"] == "NOT_CONFIGURED"
         assert "not configured" in result["reason"].lower()
 
@@ -609,7 +583,7 @@ class TestDetectionsAPICheckDetector:
 
         result = await detections_api_check_detector(context=context, config=mock_config, detector_name="toxicity")
 
-        assert result["allowed"] is True
+        assert result["allowed"] is False
         assert result["label"] == "NONE"
         assert "no configuration" in result["reason"].lower()
 
@@ -820,21 +794,6 @@ class TestMessageTypeExtraction:
 
             assert mock_run.call_args[0][2] == "bot response"
 
-    @pytest.mark.asyncio
-    async def test_empty_message_dict_without_content(self):
-        """Test dict message without content field"""
-        mock_config = Mock()
-        mock_config.rails = Mock()
-        mock_config.rails.config = Mock()
-
-        context = {"user_message": {"role": "user"}}  # No content field
-
-        result = await detections_api_check_all_detectors(context=context, config=mock_config)
-
-        # Empty content string
-        assert result["allowed"] is True
-        assert "No message content" in result["reason"]
-
 
 class TestReturnFormatConsistency:
     """Tests for return format consistency"""
@@ -851,13 +810,6 @@ class TestReturnFormatConsistency:
         assert "blocking_detectors" in result1
         assert "allowing_detectors" in result1
         assert "detector_count" in result1
-
-        # Test no message
-        mock_config.rails = Mock()
-        mock_config.rails.config = Mock()
-        result2 = await detections_api_check_all_detectors(context={}, config=mock_config)
-        assert "allowed" in result2
-        assert "detector_count" in result2
 
         # Test incomplete config
         mock_config2 = Mock(spec=[])
