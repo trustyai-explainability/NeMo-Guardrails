@@ -22,23 +22,14 @@ import logging
 from typing import Any, Dict, Optional
 
 from nemoguardrails.actions import action
-from nemoguardrails.library.detector_clients.base import AggregatedDetectorResult, DetectorResult
+from nemoguardrails.library.detector_clients.base import (
+    SYSTEM_ERROR_LABELS,
+    AggregatedDetectorResult,
+    DetectorResult,
+)
 from nemoguardrails.library.detector_clients.detections_api import DetectionsAPIClient
 
 log = logging.getLogger(__name__)
-
-""" System error labels indicate infrastructure/configuration issues,
-    not content violations. Detectors with these labels failed to execute
-    properly and should be treated as unavailable. """
-SYSTEM_ERROR_LABELS = {
-    "ERROR",
-    "HTTP_ERROR",
-    "TIMEOUT",
-    "NOT_FOUND",
-    "VALIDATION_ERROR",
-    "INVALID_RESPONSE",
-    "CONFIG_ERROR",
-}
 
 
 async def _run_detections_api_detector(detector_name: str, detector_config: Any, text: str) -> DetectorResult:
@@ -299,3 +290,43 @@ async def detections_api_check_detector(
     log.info(f"Detections API {detector_name}: {'allowed' if result.allowed else 'blocked'} (score={result.score:.3f})")
 
     return result.dict()
+
+
+@action()
+async def detections_api_generate_block_message(context: Optional[Dict] = None, **kwargs) -> str:
+    """
+    Generate detailed block message with detector information.
+
+    Creates user-friendly messages explaining why content was blocked.
+    Prioritizes system errors over content violations.
+
+    Args:
+        context: NeMo context containing input_result from detector checks
+        **kwargs: Additional arguments (ignored)
+
+    Returns:
+        Human-readable block message string
+    """
+    if context is None:
+        return "Input blocked due to content policy violation."
+
+    input_result = context.get("input_result", {})
+
+    # Check for system errors first
+    unavailable = input_result.get("unavailable_detectors", [])
+    if unavailable:
+        return f"Service temporarily unavailable. Detector(s) not reachable: {', '.join(unavailable)}"
+
+    # Check for content blocks
+    blocking = input_result.get("blocking_detectors", [])
+    if not blocking:
+        return "Input blocked due to content policy violation."
+
+    # Single detector blocked
+    if len(blocking) == 1:
+        det = blocking[0]
+        return f"Input blocked by {det['detector']} detector (score: {det['score']:.2f})"
+
+    # Multiple detectors blocked
+    detector_names = [d["detector"] for d in blocking]
+    return f"Input blocked by {len(blocking)} detectors: {', '.join(detector_names)}"

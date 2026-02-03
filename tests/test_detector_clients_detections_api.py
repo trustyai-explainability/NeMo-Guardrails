@@ -335,7 +335,7 @@ class TestParseResponse:
         assert result.metadata["http_status"] == 422
 
     def test_parse_response_http_500(self):
-        """Test HTTP 500 returns ERROR"""
+        """Test HTTP 500 returns SERVER_ERROR"""
         mock_config = Mock()
         mock_config.inference_endpoint = "http://test.com"
         mock_config.detector_id = "test-id"
@@ -345,7 +345,7 @@ class TestParseResponse:
         result = client.parse_response({}, 500)
 
         assert result.allowed is False
-        assert result.label == "ERROR"
+        assert result.label == "SERVER_ERROR"
         assert "HTTP 500" in result.reason
         assert result.metadata["http_status"] == 500
 

@@ -34,6 +34,21 @@ log = logging.getLogger(__name__)
 _http_session: Optional[aiohttp.ClientSession] = None
 _session_lock = asyncio.Lock()
 
+# System error labels indicate infrastructure/configuration issues,
+# not content violations. Detectors with these labels failed to execute
+# properly and should be treated as unavailable.
+SYSTEM_ERROR_LABELS = {
+    "ERROR",
+    "HTTP_ERROR",
+    "TIMEOUT",
+    "NOT_FOUND",
+    "VALIDATION_ERROR",
+    "SERVER_ERROR",
+    "INVALID_RESPONSE",
+    "CONFIG_ERROR",
+    "CONFIG_INCOMPLETE",
+}
+
 
 class DetectorResult(BaseModel):
     """Standardized result from detector execution"""
@@ -132,14 +147,14 @@ class BaseDetectorClient(ABC):
         deployment environments (development, staging, production).
 
         Priority order:
-        1. Custom CA certificate file (if DETECTIONS_API_CA_CERT is set)
-        2. SSL verification toggle (if DETECTIONS_API_VERIFY_SSL is set)
+        1. Custom CA certificate file (if DETECTOR_API_CA_CERT is set)
+        2. SSL verification toggle (if DETECTOR_API_VERIFY_SSL is set)
         3. Default system CA certificates
 
         Environment Variables:
-            DETECTIONS_API_CA_CERT: Path to custom CA certificate file (PEM format)
+            DETECTOR_API_CA_CERT: Path to custom CA certificate file (PEM format)
                                 Common in Kubernetes/OpenShift with mounted secrets
-            DETECTIONS_API_VERIFY_SSL: Set to "false" to disable SSL verification
+            DETECTOR_API_VERIFY_SSL: Set to "false" to disable SSL verification
                                     WARNING: Only for development/testing!
 
         Returns:
@@ -148,17 +163,17 @@ class BaseDetectorClient(ABC):
             None: Use default system CA certificates
         """
         # Check for custom CA certificate file (Kubernetes secret volume)
-        ca_cert_file = os.getenv("DETECTIONS_API_CA_CERT")
+        ca_cert_file = os.getenv("DETECTOR_API_CA_CERT")
         if ca_cert_file and os.path.exists(ca_cert_file):
             ssl_context = ssl.create_default_context(cafile=ca_cert_file)
             log.info(f"Using custom CA certificate from {ca_cert_file}")
             return ssl_context
 
         # Option to disable SSL verification (development/testing only)
-        verify_ssl = os.getenv("DETECTIONS_API_VERIFY_SSL", "true").lower()
+        verify_ssl = os.getenv("DETECTOR_API_VERIFY_SSL", "true").lower()
         if verify_ssl == "false":
             log.warning(
-                "SSL verification disabled via DETECTIONS_API_VERIFY_SSL=false. "
+                "SSL verification disabled via DETECTOR_API_VERIFY_SSL=false. "
                 "This is NOT recommended for production environments!"
             )
             return False
@@ -206,13 +221,13 @@ class BaseDetectorClient(ABC):
             token = self.api_key
         else:
             # Check for file-based secret (Kubernetes volume mount)
-            secret_file = os.getenv("DETECTIONS_API_KEY_FILE")
+            secret_file = os.getenv("DETECTOR_API_KEY_FILE")
             if secret_file and os.path.exists(secret_file):
                 with open(secret_file, "r") as f:
                     token = f.read().strip()
             else:
                 # Fallback to environment variable
-                token = os.getenv("DETECTIONS_API_KEY")
+                token = os.getenv("DETECTOR_API_KEY")
         if token:
             request_headers["Authorization"] = f"Bearer {token}"
 

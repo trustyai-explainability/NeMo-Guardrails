@@ -486,7 +486,7 @@ class TestCallEndpoint:
         mock_session.post = Mock(return_value=mock_post_cm)
 
         with patch("nemoguardrails.library.detector_clients.base._http_session", mock_session):
-            with patch.dict("os.environ", {"DETECTIONS_API_KEY": "env-key-456"}):
+            with patch.dict("os.environ", {"DETECTOR_API_KEY": "env-key-456"}):
                 await client._call_endpoint(endpoint="http://test.com/api", payload={"text": "test"}, timeout=30)
 
         # Verify env var key used
@@ -508,8 +508,8 @@ class TestGetSSLContext:
         client = ConcreteDetectorClient(mock_config, "test-detector")
 
         # Mock ssl.create_default_context to avoid needing valid cert
-        with patch.dict("os.environ", {"DETECTIONS_API_CA_CERT": str(ca_cert_file)}):
-            with patch("ssl.create_default_context") as mock_ssl:
+        with patch.dict("os.environ", {"DETECTOR_API_CA_CERT": str(ca_cert_file)}):
+            with patch("nemoguardrails.library.detector_clients.base.ssl.create_default_context") as mock_ssl:
                 mock_ssl_context = Mock(spec=ssl.SSLContext)
                 mock_ssl.return_value = mock_ssl_context
 
@@ -525,7 +525,7 @@ class TestGetSSLContext:
 
         client = ConcreteDetectorClient(mock_config, "test-detector")
 
-        with patch.dict("os.environ", {"DETECTIONS_API_CA_CERT": "/nonexistent/path/ca-cert.pem"}):
+        with patch.dict("os.environ", {"DETECTOR_API_CA_CERT": "/nonexistent/path/ca-cert.pem"}):
             ssl_context = client._get_ssl_context()
 
         # Should fall through to default behavior (None)
@@ -537,7 +537,7 @@ class TestGetSSLContext:
 
         client = ConcreteDetectorClient(mock_config, "test-detector")
 
-        with patch.dict("os.environ", {"DETECTIONS_API_VERIFY_SSL": "false"}):
+        with patch.dict("os.environ", {"DETECTOR_API_VERIFY_SSL": "false"}):
             ssl_context = client._get_ssl_context()
 
         # Should return False to disable verification
@@ -584,7 +584,7 @@ class TestAPIKeyHandling:
         mock_session.post = Mock(return_value=mock_post_cm)
 
         with patch("nemoguardrails.library.detector_clients.base._http_session", mock_session):
-            with patch.dict("os.environ", {"DETECTIONS_API_KEY_FILE": str(api_key_file)}):
+            with patch.dict("os.environ", {"DETECTOR_API_KEY_FILE": str(api_key_file)}):
                 await client._call_endpoint(endpoint="http://test.com/api", payload={"text": "test"}, timeout=30)
 
         # Verify Authorization header used file-based key
@@ -612,7 +612,7 @@ class TestAPIKeyHandling:
         with patch("nemoguardrails.library.detector_clients.base._http_session", mock_session):
             with patch.dict(
                 "os.environ",
-                {"DETECTIONS_API_KEY_FILE": "/nonexistent/api-key", "DETECTIONS_API_KEY": "env-var-key-123"},
+                {"DETECTOR_API_KEY_FILE": "/nonexistent/api-key", "DETECTOR_API_KEY": "env-var-key-123"},
             ):
                 await client._call_endpoint(endpoint="http://test.com/api", payload={"text": "test"}, timeout=30)
 

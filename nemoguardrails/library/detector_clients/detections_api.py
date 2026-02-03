@@ -115,6 +115,9 @@ class DetectionsAPIClient(BaseDetectorClient):
             elif http_status == 422:
                 label = "VALIDATION_ERROR"
                 reason = f"Invalid request to {self.detector_name}"
+            elif http_status >= 500:
+                label = "SERVER_ERROR"
+                reason = f"Detections API server error (HTTP {http_status})"
             else:
                 label = "ERROR"
                 reason = f"HTTP {http_status} error from {self.detector_name}"
