@@ -1,0 +1,8 @@
+
+rails:
+  config: {}
+  tool_output: 
+    flows:
+      - toolguard block tool output
+     
+     
