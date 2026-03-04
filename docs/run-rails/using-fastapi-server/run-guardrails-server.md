@@ -139,6 +139,58 @@ nemoguardrails server --config ./configs --auto-reload
 Use `--auto-reload` only in development environments. It is not recommended for production.
 ```
 
+## Model Provider Configuration
+
+When the `model` field is specified in a chat completion request, the server uses environment variables to determine which LLM provider and endpoint to use.
+
+```{list-table}
+:header-rows: 1
+:widths: 35 65
+
+* - Environment Variable
+  - Description
+
+* - `MAIN_MODEL_ENGINE`
+  - The LLM engine to use (e.g., `"openai"`, `"nim"`, `"vllm"`, `"anthropic"`). Default: `"openai"`.
+
+* - `MAIN_MODEL_BASE_URL`
+  - Base URL for the LLM provider. Use this for self-hosted models (e.g., `"http://localhost:8080/v1"`).
+```
+
+Set the appropriate API key for your provider:
+
+```bash
+# For NVIDIA-hosted models
+export MAIN_MODEL_ENGINE="nim"
+export MAIN_MODEL_BASE_URL="https://integrate.api.nvidia.com"
+export NVIDIA_API_KEY="your-nvidia-api-key"
+
+# For OpenAI models
+export MAIN_MODEL_ENGINE="openai"
+export MAIN_MODEL_BASE_URL="https://api.openai.com/v1"
+export OPENAI_API_KEY="your-openai-api-key"
+
+# For Anthropic models
+export MAIN_MODEL_ENGINE="anthropic"
+export MAIN_MODEL_BASE_URL="https://api.anthropic.com"
+export ANTHROPIC_API_KEY="your-anthropic-api-key"
+
+# For Azure OpenAI (also accepts "azure_openai" as engine name)
+export MAIN_MODEL_ENGINE="azure"
+export AZURE_OPENAI_API_KEY="your-azure-api-key"
+export AZURE_OPENAI_ENDPOINT="https://your-resource.openai.azure.com"
+export AZURE_OPENAI_API_VERSION="2024-06-01"  # optional, defaults to 2024-06-01
+
+# For Cohere models
+export MAIN_MODEL_ENGINE="cohere"
+export COHERE_API_KEY="your-cohere-api-key"
+# export COHERE_BASE_URL="https://custom-endpoint.example.com"  # optional
+
+# For self-hosted models (e.g., vLLM, NIM, TRT-LLM)
+export MAIN_MODEL_ENGINE="vllm"
+export MAIN_MODEL_BASE_URL="http://localhost:8080/v1"
+```
+
 ## CORS Configuration
 
 To enable your guardrails server to receive requests from browser-based applications, configure CORS using environment variables:

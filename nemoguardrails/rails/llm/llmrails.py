@@ -743,9 +743,8 @@ class LLMRails:
     ) -> Union[str, dict, GenerationResponse, Tuple[dict, dict]]:
         """Generate a completion or a next message.
 
-        The format for messages is the following:
+        The format for messages is the following::
 
-        ```python
             [
                 {"role": "context", "content": {"user_name": "John"}},
                 {"role": "user", "content": "Hello! How are you?"},
@@ -753,7 +752,6 @@ class LLMRails:
                 {"role": "event", "event": {"type": "UserSilent"}},
                 ...
             ]
-        ```
 
         Args:
             prompt: The prompt to be used for completion.
@@ -761,12 +759,13 @@ class LLMRails:
             options: Options specific for the generation.
             state: The state object that should be used as the starting point.
             streaming_handler: If specified, and the config supports streaming, the
-              provided handler will be used for streaming.
+                provided handler will be used for streaming.
 
         Returns:
             The completion (when a prompt is provided) or the next message.
 
-        System messages are not yet supported."""
+        System messages are not yet supported.
+        """
         # convert options to gen_options of type GenerationOptions
         gen_options: Optional[GenerationOptions] = None
 
@@ -973,7 +972,7 @@ class LLMRails:
             log.info(f"Conversation history so far: \n{self.explain_info.colang_history}")
 
         total_time = time.time() - t0
-        log.info("--- :: Total processing took %.2f seconds. LLM Stats: %s" % (total_time, llm_stats))
+        log.info("--- :: Total processing took %.2f seconds. Stats: %s" % (total_time, llm_stats))
 
         # If there is a streaming handler, we make sure we close it now
         streaming_handler = streaming_handler_var.get()
@@ -1309,22 +1308,18 @@ class LLMRails:
     ) -> List[dict]:
         """Generate the next events based on the provided history.
 
-        The format for events is the following:
+        The format for events is the following::
 
-        ```python
             [
                 {"type": "...", ...},
                 ...
             ]
-        ```
 
         Args:
             events: The history of events to be used to generate the next events.
-            options: The options to be used for the generation.
 
         Returns:
-            The newly generate event(s).
-
+            The newly generated event(s).
         """
         t0 = time.time()
 
@@ -1425,6 +1420,7 @@ class LLMRails:
 
         When ``rail_types`` is not provided, automatically determines which rails
         to run based on message roles:
+
         - Only user messages: runs input rails
         - Only assistant messages: runs output rails
         - Both user and assistant messages: runs both input and output rails
@@ -1434,33 +1430,39 @@ class LLMRails:
         skipping the auto-detection logic.
 
         Args:
-            messages: List of message dicts with 'role' and 'content' fields.
-                     Messages can contain any roles, but only user/assistant roles
-                     determine which rails execute when ``rail_types`` is not provided.
-            rails: Optional list of rail types to run, e.g.
-                  ``[RailType.INPUT]`` or ``[RailType.OUTPUT]``.
-                  When provided, overrides automatic detection.
+            messages: List of message dicts with ``role`` and ``content`` fields.
+                Messages can contain any roles, but only user/assistant roles
+                determine which rails execute when ``rail_types`` is not provided.
+            rail_types: Optional list of rail types to run, e.g.
+                ``[RailType.INPUT]`` or ``[RailType.OUTPUT]``.
+                When provided, overrides automatic detection.
 
         Returns:
             RailsResult containing:
-            - status: PASSED, MODIFIED, or BLOCKED
-            - content: The final content after rails processing
-            - rail: Name of the rail that blocked (if blocked)
 
-        Examples:
-            Check user input (auto-detected):
-                result = await rails.check_async([{"role": "user", "content": "Hello!"}])
-                if result.status == RailStatus.BLOCKED:
-                    print(f"Blocked by: {result.rail}")
+            - **status**: PASSED, MODIFIED, or BLOCKED
+            - **content**: The final content after rails processing
+            - **rail**: Name of the rail that blocked (if blocked)
 
-            Check bot output with context (auto-detected):
-                result = await rails.check_async([
-                    {"role": "user", "content": "Hello!"},
-                    {"role": "assistant", "content": "Hi there!"}
-                ])
+        Examples::
 
-            Run only input rails explicitly:
-                result = await rails.check_async(messages, rail_types=[RailType.INPUT])
+            # Check user input (auto-detected)
+            result = await rails.check_async(
+                [{"role": "user", "content": "Hello!"}]
+            )
+            if result.status == RailStatus.BLOCKED:
+                print(f"Blocked by: {result.rail}")
+
+            # Check bot output with context (auto-detected)
+            result = await rails.check_async([
+                {"role": "user", "content": "Hello!"},
+                {"role": "assistant", "content": "Hi there!"}
+            ])
+
+            # Run only input rails explicitly
+            result = await rails.check_async(
+                messages, rail_types=[RailType.INPUT]
+            )
         """
         if rail_types is not None:
             options: Optional[dict] = {"rails": [r.value for r in rail_types]}

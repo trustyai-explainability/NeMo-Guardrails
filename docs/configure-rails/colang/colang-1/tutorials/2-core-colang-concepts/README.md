@@ -9,7 +9,7 @@ This guide builds on the [Hello World guide](../1-hello-world/README.md) and int
 
 ## Prerequisites
 
-This "Hello World" guardrails configuration uses the OpenAI `gpt-3.5-turbo-instruct` model.
+This "Hello World" guardrails configuration uses the OpenAI `gpt-4o-mini` model.
 
 1. Install the `openai` package:
 
@@ -17,13 +17,13 @@ This "Hello World" guardrails configuration uses the OpenAI `gpt-3.5-turbo-instr
 pip install openai
 ```
 
-2. Set the `OPENAI_API_KEY` environment variable:
+1. Set the `OPENAI_API_KEY` environment variable:
 
 ```bash
 export OPENAI_API_KEY=$OPENAI_API_KEY  # Replace with your own key
 ```
 
-3. If you're running this inside a notebook, patch the AsyncIO loop.
+1. If you're running this inside a notebook, patch the AsyncIO loop.
 
 ```python
 import nest_asyncio
@@ -76,7 +76,7 @@ If you are wondering whether *user message canonical forms* are the same as clas
 
 In Colang, *flows* represent patterns of interaction between the user and the bot. In their simplest form, they are sequences of user and bot messages. In the "Hello World" example, the `greeting` flow is defined as:
 
-```colang
+```text
 define flow greeting
   user express greeting
   bot express greeting
@@ -168,7 +168,7 @@ Once an input message is received from the user, a multi-step process begins.
 After an utterance, such as  "Hello!" in the previous example, is received from the user, the guardrails instance uses the LLM to compute the corresponding canonical form.
 
 ```{note}
-NeMo Guardrails uses a task-oriented interaction model with the LLM. Every time the LLM is called, it uses a specific task prompt template, such as `generate_user_intent`, `generate_next_step`, `generate_bot_message`. See the [default template prompts](../../../nemoguardrails/llm/prompts/general.yml) for details.
+NeMo Guardrails uses a task-oriented interaction model with the LLM. Every time the LLM is called, it uses a specific task prompt template, such as `generate_user_intent`, `generate_next_step`, `generate_bot_message`. See the [default template prompts](https://github.com/NVIDIA-NeMo/Guardrails/blob/develop/nemoguardrails/llm/prompts/general.yml) for details.
 ```
 
 In the case of the "Hello!" message, a single LLM call is made using the `generate_user_intent` task prompt template. The prompt looks like the following:
@@ -229,11 +229,11 @@ user "Hello!"
 
 The prompt has four logical sections:
 
-1. A set of general instructions. These can be [configured](../../user-guides/configuration-guide.md#general-instructions) using the `instructions` key in *config.yml*.
+1. A set of general instructions. These can be [configured](../../../../configuration-reference.md#instructions) using the `instructions` key in *config.yml*.
 
-2. A sample conversation, which can also be [configured](../../user-guides/configuration-guide.md#sample-conversation) using the `sample_conversation` key in *config.yml*.
+2. A sample conversation, which can also be [configured](../../../../configuration-reference.md#sample-conversation) using the `sample_conversation` key in *config.yml*.
 
-3. A set of examples for converting user utterances to canonical forms. The top five most relevant examples are chosen by performing a vector search against all the user message examples. For more details see [ABC Bot](../../../examples/bots/abc/README.md).
+3. A set of examples for converting user utterances to canonical forms. The top five most relevant examples are chosen by performing a vector search against all the user message examples. For more details see [ABC Bot](https://github.com/NVIDIA-NeMo/Guardrails/blob/develop/examples/bots/abc/README.md).
 
 4. The current conversation preceded by the first two turns from the sample conversation.
 
@@ -247,7 +247,7 @@ print(info.llm_calls[0].completion)
   express greeting
 ```
 
-As we can see, the LLM correctly predicted the `express greeting` canonical form. It even went further to predict what the bot should do, which is `bot express greeting`, and the utterance that should be used. However, for the `generate_user_intent` task, only the first predicted line is used. If you want the LLM to predict everything in a single call, you can enable the [single LLM call option](#) in *config.yml* by setting the `rails.dialog.single_call` key to **True**.
+As we can see, the LLM correctly predicted the `express greeting` canonical form. It even went further to predict what the bot should do, which is `bot express greeting`, and the utterance that should be used. However, for the `generate_user_intent` task, only the first predicted line is used. If you want the LLM to predict everything in a single call, you can enable the [single LLM call option](../../../../configuration-reference.md#dialog-rails) in *config.yml* by setting the `rails.dialog.single_call` key to **True**.
 
 ### Step 2: Determine the next step
 
@@ -278,7 +278,7 @@ In our "Hello World" example, the predefined messages "Hello world!" and "How ar
 
 In the previous example, the LLM is prompted once. The following figure provides a summary of the outlined sequence of steps:
 
-```{image} ../../_static/puml/core_colang_concepts_fig_1.png
+```{image} ../../../../../_static/puml/core_colang_concepts_fig_1.png
 :alt: "Sequence diagram showing the three main steps of processing a user greeting: 1) Computing the canonical form of the user message, 2) Determining the next step using flows, and 3) Generating the bot's response message"
 :width: 486px
 :align: center
@@ -328,7 +328,7 @@ Summary: 3 LLM call(s) took 1.79 seconds and used 1374 tokens.
 
 Based on these steps, we can see that the `ask general question` canonical form is predicted for the user utterance "What is the capital of France?". Since there is no flow that matches it, the LLM is asked to predict the next step, which in this case is `bot response for general question`. Also, since there is no predefined response, the LLM is asked a third time to predict the final message.
 
-```{image} ../../_static/puml/core_colang_concepts_fig_2.png
+```{image} ../../../../../_static/puml/core_colang_concepts_fig_2.png
 :alt: "Sequence diagram showing the three main steps of processing a follow-up question in NeMo Guardrails: 1) Computing the canonical form of the user message, such as 'ask general question' for 'What is the capital of France?', 2) Determining the next step using the LLM, such as 'bot response for general question', and 3) Generating the bot's response message. These are the steps to handle a question that doesn't have a predefined flow."
 :width: 586px
 :align: center
@@ -336,7 +336,7 @@ Based on these steps, we can see that the `ask general question` canonical form 
 
 ## Wrapping up
 
-This guide provides a detailed overview of two core Colang concepts: *messages* and *flows*. It also looked at how the message and flow definitions are used under the hood and how the LLM is prompted. For more details, see the reference documentation for the [Python API](../../user-guides/python-api.md) and the [Colang Language Syntax](../../user-guides/colang-language-syntax-guide.md).
+This guide provides a detailed overview of two core Colang concepts: *messages* and *flows*. It also looked at how the message and flow definitions are used under the hood and how the LLM is prompted. For more details, see the reference documentation for the [Python API](../../../../../reference/python-api/index.md) and the [Colang Language Syntax](../../colang-language-syntax-guide.md).
 
 ## Next
 

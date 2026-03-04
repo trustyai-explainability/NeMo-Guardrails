@@ -250,7 +250,7 @@ rails:
 | Flow | Description |
 |------|-------------|
 | `self check input` | LLM-based policy compliance check |
-| `check jailbreak` | Jailbreak detection heuristics |
+| `jailbreak detection heuristics` | Jailbreak detection heuristics |
 | `jailbreak detection model` | NIM-based jailbreak detection |
 | `mask sensitive data on input` | Mask PII in user input |
 | `detect sensitive data on input` | Detect and block PII |
@@ -301,6 +301,7 @@ rails:
 | `mask sensitive data on output` | Mask PII in output |
 | `llama guard check output` | LlamaGuard content moderation |
 | `content safety check output` | NVIDIA content safety model |
+| `injection detection` | Injection detection (SQL, XSS, code, template) |
 
 ### Retrieval Rails
 
@@ -490,7 +491,7 @@ The multilingual feature supports the following languages:
 | Arabic | `ar` |
 | Thai | `th` |
 
-If the detected language is not in this list, English is used as the fallback. For more details, refer to [Multilingual Content Safety](./guardrail-catalog.md#multilingual-content-safety).
+If the detected language is not in this list, English is used as the fallback. For more details, refer to [Multilingual Content Safety](./guardrail-catalog/content-safety.md#multilingual-refusal-messages).
 
 #### Third-Party Integrations
 
@@ -507,7 +508,7 @@ rails:
         guardrails_config: {}
 ```
 
-For more information, refer to [AutoAlign Integration](../user-guides/community/auto-align.md).
+For more information, refer to [AutoAlign Integration](guardrail-catalog/community/auto-align.md).
 
 ##### Patronus
 
@@ -525,7 +526,7 @@ rails:
           params: {}
 ```
 
-For more information, refer to [Patronus Evaluate API Integration](../user-guides/community/patronus-evaluate-api.md).
+For more information, refer to [Patronus Evaluate API Integration](guardrail-catalog/community/patronus-evaluate-api.md).
 
 ##### Clavata
 
@@ -544,7 +545,7 @@ rails:
         labels: []
 ```
 
-For more information, refer to [Clavata Integration](../user-guides/community/clavata.md).
+For more information, refer to [Clavata Integration](guardrail-catalog/community/clavata.md).
 
 ##### Pangea AI Guard
 
@@ -558,7 +559,7 @@ rails:
         recipe: "recipe_key"
 ```
 
-For more information, refer to [Pangea AI Guard Integration](../user-guides/community/pangea.md).
+For more information, refer to [Pangea AI Guard Integration](guardrail-catalog/community/pangea.md).
 
 ##### Trend Micro
 
@@ -570,7 +571,7 @@ rails:
       api_key_env_var: "TREND_MICRO_API_KEY"
 ```
 
-For more information, refer to [Trend Micro Integration](../user-guides/community/trend-micro.md).
+For more information, refer to [Trend Micro Integration](guardrail-catalog/community/trend-micro.md).
 
 ##### Cisco AI Defense
 
@@ -582,7 +583,7 @@ rails:
       fail_open: false
 ```
 
-For more information, refer to [Cisco AI Defense Integration](../user-guides/community/ai-defense.md).
+For more information, refer to [Cisco AI Defense Integration](guardrail-catalog/community/ai-defense.md).
 
 ##### Private AI
 
@@ -599,7 +600,7 @@ rails:
         entities: []
 ```
 
-For more information, refer to [Private AI Integration](../user-guides/community/privateai.md).
+For more information, refer to [Private AI Integration](guardrail-catalog/community/privateai.md).
 
 ##### Fiddler Guardrails
 
@@ -612,7 +613,7 @@ rails:
       faithfulness_threshold: 0.05
 ```
 
-For more information, refer to [Fiddler Guardrails Integration](../user-guides/community/fiddler.md).
+For more information, refer to [Fiddler Guardrails Integration](guardrail-catalog/community/fiddler.md).
 
 ##### Guardrails AI
 
@@ -632,7 +633,7 @@ rails:
             parameters: {}
 ```
 
-For more information, refer to [Guardrails AI Integration](../user-guides/community/guardrails-ai.md).
+For more information, refer to [Guardrails AI Integration](guardrail-catalog/community/guardrails-ai.md).
 
 ---
 
@@ -710,8 +711,14 @@ instructions:
 
 ```yaml
 sample_conversation: |
-  user: Hello
-  assistant: Hi! How can I help you?
+  user "Hello there!"
+    express greeting
+  bot express greeting
+    "Hello! How can I assist you today?"
+  user "What can you do for me?"
+    ask about capabilities
+  bot respond about capabilities
+    "As an AI assistant, I can help you with a wide range of tasks."
 ```
 
 ### Knowledge Base
@@ -748,14 +755,14 @@ tracing:
 
 ### Streaming
 
-```yaml
-streaming:
-  enabled: false
-  stream_on_start: false
-  stream_on_end: true
-  first_chunk_suffix: ""
-  last_chunk_suffix: ""
+```{deprecated} v0.20.0
+The top-level `streaming` field is a boolean that is no longer required. Use the `stream_async()` method directly instead. For output rail streaming configuration, see [Output Streaming Configuration](#output-streaming-configuration).
 ```
+
+```yaml
+streaming: false
+```
+
 
 ### Import Paths
 

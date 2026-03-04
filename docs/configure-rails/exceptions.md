@@ -19,7 +19,7 @@ An exception is an event whose name ends with `Exception`, e.g., `InputRailExcep
 When an exception is raised, the final output is a message with the role set to `exception` and the content
 set to additional information about the exception. For example:
 
-```colang
+```text
 define flow input rail example
   # ...
   create event InputRailException(message="Input not allowed.")
@@ -42,7 +42,7 @@ define flow input rail example
 
 ## Guardrails Library Exception
 
-By default, all the guardrails included in the [](guardrail-catalog.md) return a predefined message
+By default, all the guardrails included in the [](guardrail-catalog/index.md) return a predefined message
 when a rail is triggered. You can change this behavior by setting the `enable_rails_exceptions` key to `True` in your
 `config.yml` file:
 
@@ -53,7 +53,7 @@ enable_rails_exceptions: True
 When this setting is enabled, the rails are triggered, they will return an exception message.
 To understand better what is happening under the hood, here's how the `self check input` rail is implemented:
 
-```colang
+```text
 define flow self check input
   $allowed = execute self_check_input
   if not $allowed
@@ -87,47 +87,16 @@ When the `self check input` rail is triggered, the following exception is return
 
 ## Exception Types
 
-NeMo Guardrails supports several predefined exception types:
+The NeMo Guardrails library includes additional exception types for specific integrations:
 
-### InputRailException
+- `LlamaGuardInputRailException` / `LlamaGuardOutputRailException`
+- `JailbreakDetectionRailException`
+- `ContentSafetyCheckInputException` / `ContentSafetyCheckOutputException`
+- `FactCheckRailException`
+- `SelfCheckHallucinationRailException`
+- `InjectionDetectionRailException`
 
-Raised when input rails block or reject user input.
-
-```colang
-define flow custom input check
-  if $user_message contains "forbidden_word"
-    create event InputRailException(message="Input contains forbidden content.")
-```
-
-### OutputRailException
-
-Raised when output rails block or reject bot responses.
-
-```colang
-define flow custom output check
-  if $bot_message contains "sensitive_info"
-    create event OutputRailException(message="Output contains sensitive information.")
-```
-
-### DialogRailException
-
-Raised when dialog rails encounter issues during conversation flow.
-
-```colang
-define flow topic restriction
-  if $user_intent == "ask_about_restricted_topic"
-    create event DialogRailException(message="This topic is not allowed in the current context.")
-```
-
-### RetrievalRailException
-
-Raised when retrieval rails encounter issues with document retrieval.
-
-```colang
-define flow retrieval validation
-  if len($relevant_chunks) == 0
-    create event RetrievalRailException(message="No relevant information found for the query.")
-```
+Each library rail raises its own exception type when `enable_rails_exceptions` is enabled.
 
 ---
 
@@ -135,7 +104,7 @@ define flow retrieval validation
 
 You can create custom exception types by following the naming convention of ending with `Exception`:
 
-```colang
+```text
 define flow custom validation
   if not $custom_condition
     create event CustomValidationException(message="Custom validation failed.")
@@ -218,16 +187,3 @@ except Exception as e:
 5. **Exception Categories**: Use appropriate exception types to categorize different kinds of errors.
 
 6. **Configuration Control**: Use the `enable_rails_exceptions` setting to control whether rails return exceptions or predefined messages.
-
----
-
-## Integration with Tracing
-
-Exceptions are automatically captured by the tracing system when enabled. This allows you to:
-
-- Monitor exception frequency and types
-- Track which rails are triggering exceptions
-- Analyze patterns in user inputs that cause exceptions
-- Debug and improve rail configurations
-
-For more information on tracing, see the [Tracing Configuration](tracing-configuration.md) guide.

@@ -122,15 +122,15 @@ You can install the NeMo Guardrails library with optional extra packages to add 
 |-------|-------------|
 | `nvidia` | NVIDIA-hosted model integration through [build.nvidia.com](https://build.nvidia.com/) |
 | `openai` | OpenAI-hosted model integration |
-| `sdd` | [Sensitive data detection](../configure-rails/guardrail-catalog.md#presidio-based-sensitive-data-detection) using Presidio |
-| `eval` | [Evaluation tools](../evaluation/index.rst) for testing guardrails |
+| `sdd` | [Sensitive data detection](../configure-rails/guardrail-catalog/pii-detection.md#presidio-based-sensitive-data-detection) using Presidio |
+| `eval` | [Evaluation tools](../evaluation/evaluate-guardrails.md) for testing guardrails |
 | `tracing` | OpenTelemetry tracing support |
 | `gcp` | Google Cloud Platform language services |
 | `jailbreak` | YARA-based jailbreak detection heuristics |
 | `multilingual` | Language detection for multilingual content |
 | `all` | All optional packages |
 
-Some features such as [AlignScore](../user-guides/community/alignscore.md) have additional requirements. See the feature documentation for details.
+Some features such as [AlignScore](../configure-rails/guardrail-catalog/community/alignscore.md) have additional requirements. See the feature documentation for details.
 
 ## Docker
 
@@ -142,11 +142,19 @@ Use the following information to resolve common installation issues.
 
 ### C++ Runtime Errors
 
-The library uses [annoy](https://github.com/spotify/annoy), which requires a C++ compiler. If installation fails:
+The library uses [Annoy](https://github.com/spotify/annoy), which requires a C++ compiler. Most systems already have one installed. To check, run the following command:
 
 ::::{tab-set}
 
 :::{tab-item} Linux/macOS
+
+```bash
+g++ --version
+```
+
+If the command prints a version number (for example, `g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0`), a C++ compiler is already installed and no action is needed.
+
+If the command is not found, install the compiler:
 
 ```bash
 apt-get install gcc g++ python3-dev
@@ -156,7 +164,15 @@ apt-get install gcc g++ python3-dev
 
 :::{tab-item} Windows
 
-Install [Microsoft C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) (version 14.0 or greater).
+Open a terminal (CMD or PowerShell) and run:
+
+```bat
+where cl
+```
+
+If the command prints a file path, a C++ compiler is already installed and no action is needed.
+
+If the command is not found, install [Microsoft C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) (version 14.0 or greater).
 
 :::
 

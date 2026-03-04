@@ -225,7 +225,7 @@ response = rails.generate(messages=[
 
 You can access context variables in Colang flows using `$variable_name` syntax:
 
-```colang
+```text
 define bot explain permissions
     "Hello {$user_name}! As an {$user_role}, you have full system access."
 ```
@@ -466,5 +466,5 @@ asyncio.run(main())
 - [](check-messages.md) - Validate messages against rails
 - [](streaming.md) - Real-time token streaming
 - [](event-based-api.md) - Low-level event control
-- [](tools-integration.md) - Integrating LangChain tools
+- [](../../integration/tools-integration.md) - Integrating LangChain tools
 - [](../../configure-rails/index.md) - Complete configuration reference

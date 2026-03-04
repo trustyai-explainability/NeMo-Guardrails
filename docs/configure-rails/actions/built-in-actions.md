@@ -36,7 +36,7 @@ These actions are fundamental to the guardrails process:
 | Action | Description |
 |--------|-------------|
 | `generate_user_intent` | Generate the canonical form for the user utterance |
-| `generate_next_step` | Generate the next step in the conversation flow |
+| `generate_next_steps` | Generate the next step in the conversation flow |
 | `generate_bot_message` | Generate a bot message based on the desired intent |
 | `retrieve_relevant_chunks` | Retrieve relevant chunks from the knowledge base |
 
@@ -44,17 +44,17 @@ These actions are fundamental to the guardrails process:
 
 Converts raw user input into a canonical intent form:
 
-```colang
+```text
 # Automatically called during guardrails process
 # Input: "Hello there!"
 # Output: express greeting
 ```
 
-### generate_next_step
+### generate_next_steps
 
 Determines what the bot should do next:
 
-```colang
+```text
 # Automatically called to decide next action
 # Output: bot express greeting, execute some_action, etc.
 ```
@@ -63,7 +63,7 @@ Determines what the bot should do next:
 
 Generates the actual bot response text:
 
-```colang
+```text
 # Converts intent to natural language
 # Input: bot express greeting
 # Output: "Hello! How can I help you today?"
@@ -73,7 +73,7 @@ Generates the actual bot response text:
 
 Retrieves context from the knowledge base:
 
-```colang
+```text
 # Retrieves relevant documents for RAG
 # Result stored in $relevant_chunks context variable
 ```
@@ -101,7 +101,7 @@ rails:
       - self check input
 ```
 
-```colang
+```text
 # rails/input.co
 define flow self check input
   $allowed = execute self_check_input
@@ -122,7 +122,7 @@ rails:
       - self check output
 ```
 
-```colang
+```text
 # rails/output.co
 define flow self check output
   $allowed = execute self_check_output
@@ -157,7 +157,11 @@ rails:
 
 ## LangChain Tool Wrappers
 
-The library includes wrappers for popular LangChain tools:
+The library includes wrappers for popular LangChain tools.
+
+```{note}
+These tool wrappers are only available when the `NEMO_GUARDRAILS_DEMO_ACTIONS` environment variable is set.
+```
 
 | Action | Description | Requirements |
 |--------|-------------|--------------|
@@ -169,12 +173,12 @@ The library includes wrappers for popular LangChain tools:
 | `openweather_query` | Weather information | OpenWeatherMap API key |
 | `serp_api_query` | SerpAPI search | SerpApi key |
 | `wikipedia_query` | Wikipedia information | None |
-| `wolfram_alpha_query` | Math and science queries | Wolfram Alpha API key |
+| `wolframalpha_query` | Math and science queries | Wolfram Alpha API key |
 | `zapier_nla_query` | Zapier automation | Zapier NLA API key |
 
 ### Using LangChain Tools
 
-```colang
+```text
 define flow answer with search
   user ask about current events
   $results = execute google_search(query=$user_query)
@@ -183,7 +187,7 @@ define flow answer with search
 
 ### Wikipedia Example
 
-```colang
+```text
 define flow answer with wikipedia
   user ask about historical facts
   $info = execute wikipedia_query(query=$user_query)
@@ -211,7 +215,7 @@ rails:
           - PHONE_NUMBER
 ```
 
-```colang
+```text
 define flow check input sensitive data
   $has_pii = execute detect_sensitive_data
   if $has_pii
@@ -221,7 +225,7 @@ define flow check input sensitive data
 
 ### mask_sensitive_data
 
-```colang
+```text
 define flow mask input sensitive data
   $masked_input = execute mask_sensitive_data
   # Continue with masked input
@@ -233,7 +237,8 @@ define flow mask input sensitive data
 |--------|-------------|
 | `llama_guard_check_input` | LlamaGuard input moderation |
 | `llama_guard_check_output` | LlamaGuard output moderation |
-| `content_safety_check` | NVIDIA content safety model |
+| `content_safety_check_input` | NVIDIA content safety model for input (requires `model_name` parameter) |
+| `content_safety_check_output` | NVIDIA content safety model for output (requires `model_name` parameter) |
 
 ### LlamaGuard Example
 
@@ -252,24 +257,24 @@ rails:
 
 | Action | Description |
 |--------|-------------|
-| `check_jailbreak` | Detect jailbreak attempts |
+| `jailbreak_detection_model` | Detect jailbreak attempts using a trained classifier |
+| `jailbreak_detection_heuristics` | Detect jailbreak attempts using heuristic checks |
 
 ```yaml
 # config.yml
 rails:
   input:
     flows:
-      - check jailbreak
+      - jailbreak detection heuristics
 ```
 
 ## Using Built-in Actions in Custom Flows
 
 You can combine built-in actions with custom logic:
 
-```colang
+```text
 define flow enhanced_input_check
-  # First, check for jailbreak
-  $is_jailbreak = execute check_jailbreak
+  $is_jailbreak = execute jailbreak_detection_heuristics
   if $is_jailbreak
     bot refuse to respond
     stop

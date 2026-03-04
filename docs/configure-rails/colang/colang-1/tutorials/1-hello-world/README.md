@@ -5,11 +5,11 @@ description: Create your first guardrails configuration to control greeting beha
 
 # Hello World
 
-This guide shows you how to create a "Hello World" guardrails configuration that controls the greeting behavior. Before you begin, make sure you have [installed NeMo Guardrails](../../getting-started/installation-guide.md).
+This guide shows you how to create a "Hello World" guardrails configuration that controls the greeting behavior. Before you begin, make sure you have [installed NeMo Guardrails](../../../../../getting-started/installation-guide.md).
 
 ## Prerequisites
 
-This "Hello World" guardrails configuration uses the OpenAI `gpt-3.5-turbo-instruct` model.
+This "Hello World" guardrails configuration uses the OpenAI `gpt-4o-mini` model.
 
 1. Install the `openai` package:
 
@@ -17,13 +17,13 @@ This "Hello World" guardrails configuration uses the OpenAI `gpt-3.5-turbo-instr
 pip install openai
 ```
 
-2. Set the `OPENAI_API_KEY` environment variable:
+1. Set the `OPENAI_API_KEY` environment variable:
 
 ```bash
 export OPENAI_API_KEY=$OPENAI_API_KEY    # Replace with your own key
 ```
 
-3. If you're running this inside a notebook, patch the AsyncIO loop.
+1. If you're running this inside a notebook, patch the AsyncIO loop.
 
 ```python
 import nest_asyncio
@@ -45,7 +45,7 @@ Every guardrails configuration must be stored in a folder. The standard folder s
 │   ├── ...
 ```
 
-See the [Configuration Guide](../../user-guides/configuration-guide.md) for information about the contents of these files.
+See the [Configuration Reference](../../../../configuration-reference.md) for information about the contents of these files.
 
 1. Create a folder, such as *config*, for your configuration:
 
@@ -53,16 +53,16 @@ See the [Configuration Guide](../../user-guides/configuration-guide.md) for info
 mkdir config
 ```
 
-2. Create a *config.yml* file with the following content:
+1. Create a *config.yml* file with the following content:
 
 ```yaml
 models:
  - type: main
    engine: openai
-   model: gpt-3.5-turbo-instruct
+   model: gpt-4o-mini
 ```
 
-The `models` key in the *config.yml* file configures the LLM model. For a complete list of supported LLM models, see [Supported LLM Models](../../user-guides/configuration-guide.md#supported-llm-models).
+The `models` key in the *config.yml* file configures the LLM model. For a complete list of supported LLM models, see [Supported LLM Models](../../../../../about/supported-llms.md).
 
 ## Step 2: load the guardrails configuration
 
@@ -102,14 +102,14 @@ To control the greeting response, define the user and bot messages, and the flow
 
 1. Define the `greeting` user message by creating a *config/rails.co* file with the following content:
 
-```colang
+```text
 define user express greeting
   "Hello"
   "Hi"
   "Wassup?"
 ```
 
-2. Add a greeting flow that instructs the bot to respond back with "Hello World!" and ask how they are doing by adding the following content to the *rails.co* file:
+1. Add a greeting flow that instructs the bot to respond back with "Hello World!" and ask how they are doing by adding the following content to the *rails.co* file:
 
 ```python
 define flow greeting
@@ -118,7 +118,7 @@ define flow greeting
   bot ask how are you
 ```
 
-3. Define the messages for the response by adding the following content to the *rails.co* file:
+1. Define the messages for the response by adding the following content to the *rails.co* file:
 
 ```python
 define bot express greeting
@@ -128,7 +128,7 @@ define bot ask how are you
   "How are you doing?"
 ```
 
-4. Reload the config and test it:
+1. Reload the config and test it:
 
 ```python
 config = RailsConfig.from_path("./config")
@@ -177,6 +177,7 @@ $ nemoguardrails chat
 Without any additional parameters, the CLI chat loads the configuration from the *config.yml* file in the *config* folder in the current directory.
 
 ### Sample session
+
 ```
 $ nemoguardrails chat
 Starting the chat (Press Ctrl+C to quit) ...
@@ -209,7 +210,7 @@ INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
 
 The Chat UI interface is now available at `http://localhost:8000`:
 
-![hello-world-server-ui.png](../../_static/images/hello-world-server-ui.png)
+![NeMo Guardrails Chat UI showing the Hello World configuration](../../../../../_static/images/hello-world-server-ui.png)
 
 ## Next
 

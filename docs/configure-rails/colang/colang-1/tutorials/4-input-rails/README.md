@@ -15,13 +15,13 @@ This topic demonstrates how to add input rails to a guardrails configuration. As
 pip install openai
 ```
 
-2. Set the `OPENAI_API_KEY` environment variable:
+1. Set the `OPENAI_API_KEY` environment variable:
 
 ```bash
 export OPENAI_API_KEY=$OPENAI_API_KEY    # Replace with your own key
 ```
 
-3. If you're running this inside a notebook, patch the AsyncIO loop.
+1. If you're running this inside a notebook, patch the AsyncIO loop.
 
 ```python
 import nest_asyncio
@@ -31,18 +31,18 @@ nest_asyncio.apply()
 
 ## Config Folder
 
-Create a *config* folder with a *config.yml* file with the following content that uses the `gpt-3.5-turbo-instruct` model:
+Create a *config* folder with a *config.yml* file with the following content that uses the `gpt-4o-mini` model:
 
 ```yaml
 models:
  - type: main
    engine: openai
-   model: gpt-3.5-turbo-instruct
+   model: gpt-4o-mini
 ```
 
 ## General Instructions
 
-Configure the **general instructions** for the bot. You can think of them as the system prompt. For details, see the [Configuration Guide](../../user-guides/configuration-guide.md#general-instructions). These instructions configure the bot to answer questions about the employee handbook and the company's policies.
+Configure the **general instructions** for the bot. You can think of them as the system prompt. For details, see the [Configuration Reference](../../../../configuration-reference.md#instructions). These instructions configure the bot to answer questions about the employee handbook and the company's policies.
 
 Add the following content to *config.yml* to create a **general instruction**:
 
@@ -60,7 +60,7 @@ In the snippet above, we instruct the bot to answer questions about the employee
 
 ## Sample Conversation
 
-Another option to influence how the LLM responds to a sample conversation. The sample conversation sets the tone for the conversation between the user and the bot. The sample conversation is included in the prompts, which are shown in a subsequent section. For details, see the [Configuration Guide](../../user-guides/configuration-guide.md#sample-conversation).
+Another option to influence how the LLM responds to a sample conversation. The sample conversation sets the tone for the conversation between the user and the bot. The sample conversation is included in the prompts, which are shown in a subsequent section. For details, see the [Configuration Reference](../../../../configuration-reference.md#sample-conversation).
 
 Add the following to *config.yml* to create a **sample conversation**:
 
@@ -157,7 +157,7 @@ If the bot does not know the answer to a question, it truthfully says it does no
 
 > **NOTE**: this jailbreak attempt does not work 100% of the time. If you're running this and getting a different result, try a few times, and you should get a response similar to the previous.
 
-Allowing the LLM to comply with this type of request is something we don't want. To prevent jailbreak attempts like this, you can add an input rail that can process the user input before it is sent to the LLM. NeMo Guardrails comes with a built-in [self check input](../../user-guides/guardrails-library.md#input-checking) rail that uses a separate LLM query to detect a jailbreak attempt. To use it, you have to:
+Allowing the LLM to comply with this type of request is something we don't want. To prevent jailbreak attempts like this, you can add an input rail that can process the user input before it is sent to the LLM. NeMo Guardrails comes with a built-in [self check input](../../../../guardrail-catalog/self-check.md#self-check-input) rail that uses a separate LLM query to detect a jailbreak attempt. To use it, you have to:
 
 1. Activate the `self check input` rail in *config.yml*.
 2. Add a `self_check_input` prompt in *prompts.yml*.
@@ -178,9 +178,9 @@ rails:
 - The `flows` keys contains the name of the flows that is used as input rails.
 - `self check input` is the name of a pre-defined flow that implements self-check input checking.
 
-All the rails in NeMo Guardrails are implemented as flows. For example, you can find the `self_check_input` flow [here](../../../nemoguardrails/library/self_check/input_check/flows.co).
+All the rails in NeMo Guardrails are implemented as flows. For example, you can find the `self_check_input` flow [here](https://github.com/NVIDIA-NeMo/Guardrails/blob/develop/nemoguardrails/library/self_check/input_check/flows.co).
 
-```colang
+```text
 define flow self check input
   $allowed = execute self_check_input
 
@@ -288,7 +288,7 @@ print(info.llm_calls[0].completion)
 
 The following figure depicts in more details how the self-check input rail works:
 
-```{image} ../../_static/puml/input_rails_fig_1.png
+```{image} ../../../../../_static/puml/input_rails_fig_1.png
 :alt: "Sequence diagram showing how the self-check input rail works in NeMo Guardrails: 1) Application code sends a user message to the Programmable Guardrails system, 2) The message is passed to the Input Rails component, 3) Input Rails calls the self_check_input action, 4) The action uses an LLM to evaluate the message, 5) If the LLM returns 'Yes' indicating inappropriate content, the input is blocked and the bot responds with 'I am not able to respond to this.'"
 :width: 815px
 :align: center
@@ -334,7 +334,7 @@ print(info.llm_calls[0].completion)
 
 Because the input rail was not triggered, the flow continued as usual.
 
-```{image} ../../_static/puml/input_rails_fig_2.png
+```{image} ../../../../../_static/puml/input_rails_fig_2.png
 :alt: "Sequence diagram showing how the self-check input rail works in NeMo Guardrails when processing a valid user message: 1) Application code sends a user message to the Programmable Guardrails system, 2) The message is passed to the Input Rails component, 3) Input Rails calls the self_check_input action, 4) The action uses an LLM to evaluate the message, 5) If the LLM returns 'No' (indicating appropriate content), the input is allowed to continue, 6) The system then proceeds to generate a bot response using the general task prompt"
 :width: 740px
 :align: center
@@ -369,7 +369,7 @@ Feel free to experiment with various inputs that should or should not trigger th
 
 ## More on Input Rails
 
-Input rails also have the ability to alter the message from the user. By changing the value for the `$user_message` variable, the subsequent input rails and dialog rails work with the updated value. This can be useful, for example, to mask sensitive information. For an example of this behavior, checkout the [Sensitive Data Detection rails](../../user-guides/guardrails-library.md#presidio-based-sensitive-data-detection).
+Input rails also have the ability to alter the message from the user. By changing the value for the `$user_message` variable, the subsequent input rails and dialog rails work with the updated value. This can be useful, for example, to mask sensitive information. For an example of this behavior, checkout the [Sensitive Data Detection rails](../../../../guardrail-catalog/pii-detection.md#presidio-based-sensitive-data-detection).
 
 ## Next
 

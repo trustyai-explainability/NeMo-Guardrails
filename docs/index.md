@@ -57,7 +57,7 @@ Connect to NVIDIA NIM, OpenAI, Azure, Anthropic, HuggingFace, and LangChain prov
 
 ## Get Started
 
-Follow these steps to start using the NeMo Guardrails library.
+Use the following guides to get started with the NeMo Guardrails library and browse the catalog of pre-built guardrails.
 
 ::::{grid} 1 1 2 2
 :gutter: 3
@@ -78,6 +78,15 @@ Install NeMo Guardrails with pip, configure your environment, and verify the ins
 Follow hands-on tutorials to deploy Nemotron Content Safety, Nemotron Topic Control, and Nemotron Jailbreak Detect
 +++
 {bdg-secondary}`Tutorial`
+:::
+
+:::{grid-item-card} Guardrail Catalog
+:link: configure-rails/guardrail-catalog/index
+:link-type: doc
+
+Reference for pre-built guardrails including content safety, jailbreak detection, topic control, PII handling, agentic security, and third party APIs.
++++
+{bdg-secondary}`Reference`
 :::
 ::::
 
@@ -109,7 +118,7 @@ Run guardrailed inference using the Python API or Guardrails API server.
 :::
 
 :::{grid-item-card} Evaluate
-:link: evaluation/README
+:link: evaluation/evaluate-guardrails
 :link-type: doc
 
 Measure accuracy and performance of dialog, fact-checking, moderation, and hallucination rails.
@@ -178,7 +187,7 @@ Overview <configure-rails/overview.md>
 Prerequisites <configure-rails/before-configuration.md>
 Configuring YAML File <configure-rails/yaml-schema/index.md>
 YAML Schema Reference <configure-rails/configuration-reference.md>
-Guardrail Catalog <configure-rails/guardrail-catalog.md>
+Guardrail Catalog <configure-rails/guardrail-catalog/index.md>
 Custom Actions <configure-rails/actions/index.md>
 Custom Initialization <configure-rails/custom-initialization/index.md>
 Colang <configure-rails/colang/index.md>
@@ -229,7 +238,6 @@ NeMo Microservice <deployment/using-microservice>
 :hidden:
 
 LangChain Frameworks <integration/langchain/index.md>
-AlignScore <integration/align-score-deployment>
 Tools Integration <integration/tools-integration.md>
 ```
 
