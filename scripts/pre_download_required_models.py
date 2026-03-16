@@ -107,6 +107,162 @@ def download_fastembed_models(models):
         except Exception as e:
             logging.warning(f"Failed to download FastEmbed model {model_name}: {e}")
 
+    cache_dir = Path(
+        os.environ.get(
+            "FASTEMBED_CACHE_PATH", str(Path.home() / ".cache" / "fastembed")
+        )
+    )
+    populate_fastembed_gcs_cache(cache_dir)
+
+
+def populate_fastembed_gcs_cache(cache_dir: Path):
+    """Populate fastembed GCS-format cache from HF-format cache.
+
+    fastembed has two download paths: HuggingFace and Google Cloud Storage.
+    During image build, models are downloaded via HF and cached in HF format
+    (models--org--name/snapshots/<hash>/). At runtime with HF_HUB_OFFLINE=1,
+    the HF path fails and fastembed falls back to checking for GCS-format
+    directories (fast-<name>/). If these don't exist, it downloads ~80-90MB
+    from storage.googleapis.com — which fails in air-gapped environments.
+
+    This function copies model files from the HF cache snapshots into the
+    GCS-format directories so both cache paths are satisfied at build time.
+    """
+    import shutil
+
+    try:
+        from fastembed import TextEmbedding
+    except ImportError:
+        return
+
+    hf_to_model = {}
+    for desc in TextEmbedding.list_supported_models():
+        if desc.sources and desc.sources.hf:
+            hf_to_model[desc.sources.hf] = desc.model
+
+    for hf_dir in sorted(cache_dir.glob("models--*")):
+        if not hf_dir.is_dir():
+            continue
+
+        hf_repo = "/".join(hf_dir.name.split("--")[1:])
+        model_name = hf_to_model.get(hf_repo)
+        if not model_name:
+            logging.info(f"No fastembed model mapping for {hf_repo}, skipping")
+            continue
+
+        fast_name = f"fast-{model_name.split('/')[-1]}"
+        fast_dir = cache_dir / fast_name
+
+        if fast_dir.exists() and any(fast_dir.iterdir()):
+            logging.info(f"GCS cache already populated: {fast_dir}")
+            continue
+
+        snapshots = hf_dir / "snapshots"
+        if not snapshots.exists():
+            continue
+
+        snapshot_dirs = sorted(
+            snapshots.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True
+        )
+        if not snapshot_dirs:
+            continue
+        snapshot = snapshot_dirs[0]
+
+        fast_dir.mkdir(parents=True, exist_ok=True)
+        for item in snapshot.iterdir():
+            dest = fast_dir / item.name
+            src = item.resolve() if item.is_symlink() else item
+            if src.is_file():
+                shutil.copy2(str(src), str(dest))
+            elif src.is_dir():
+                shutil.copytree(str(src), str(dest))
+
+        file_count = sum(1 for _ in fast_dir.iterdir())
+        total_size = sum(f.stat().st_size for f in fast_dir.rglob("*") if f.is_file())
+        logging.info(
+            f"Populated GCS cache: {fast_dir} "
+            f"({file_count} files, {total_size / 1024 / 1024:.1f} MB) "
+            f"from {hf_repo}"
+        )
+
+    cache_dir = Path(
+        os.environ.get(
+            "FASTEMBED_CACHE_PATH", str(Path.home() / ".cache" / "fastembed")
+        )
+    )
+    populate_fastembed_gcs_cache(cache_dir)
+
+
+def populate_fastembed_gcs_cache(cache_dir: Path):
+    """Populate fastembed GCS-format cache from HF-format cache.
+
+    fastembed has two download paths: HuggingFace and Google Cloud Storage.
+    During image build, models are downloaded via HF and cached in HF format
+    (models--org--name/snapshots/<hash>/). At runtime with HF_HUB_OFFLINE=1,
+    the HF path fails and fastembed falls back to checking for GCS-format
+    directories (fast-<name>/). If these don't exist, it downloads ~80-90MB
+    from storage.googleapis.com — which fails in air-gapped environments.
+
+    This function copies model files from the HF cache snapshots into the
+    GCS-format directories so both cache paths are satisfied at build time.
+    """
+    import shutil
+
+    try:
+        from fastembed import TextEmbedding
+    except ImportError:
+        return
+
+    hf_to_model = {}
+    for desc in TextEmbedding.list_supported_models():
+        if desc.sources and desc.sources.hf:
+            hf_to_model[desc.sources.hf] = desc.model
+
+    for hf_dir in sorted(cache_dir.glob("models--*")):
+        if not hf_dir.is_dir():
+            continue
+
+        hf_repo = "/".join(hf_dir.name.split("--")[1:])
+        model_name = hf_to_model.get(hf_repo)
+        if not model_name:
+            logging.info(f"No fastembed model mapping for {hf_repo}, skipping")
+            continue
+
+        fast_name = f"fast-{model_name.split('/')[-1]}"
+        fast_dir = cache_dir / fast_name
+
+        if fast_dir.exists() and any(fast_dir.iterdir()):
+            logging.info(f"GCS cache already populated: {fast_dir}")
+            continue
+
+        snapshots = hf_dir / "snapshots"
+        if not snapshots.exists():
+            continue
+
+        snapshot_dirs = sorted(
+            snapshots.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True
+        )
+        if not snapshot_dirs:
+            continue
+        snapshot = snapshot_dirs[0]
+
+        fast_dir.mkdir(parents=True, exist_ok=True)
+        for item in snapshot.iterdir():
+            dest = fast_dir / item.name
+            src = item.resolve() if item.is_symlink() else item
+            if src.is_file():
+                shutil.copy2(str(src), str(dest))
+            elif src.is_dir():
+                shutil.copytree(str(src), str(dest))
+
+        file_count = sum(1 for _ in fast_dir.iterdir())
+        total_size = sum(f.stat().st_size for f in fast_dir.rglob("*") if f.is_file())
+        logging.info(
+            f"Populated GCS cache: {fast_dir} "
+            f"({file_count} files, {total_size / 1024 / 1024:.1f} MB) "
+            f"from {hf_repo}"
+        )
+
 
 def download_huggingface_models(models):
     try:
