@@ -12,7 +12,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import copy
 import logging
+import re
 import uuid
 from time import time
 from typing import Any, Dict, List, Optional, cast
@@ -35,6 +37,20 @@ from nemoguardrails.logging.stats import LLMStats
 from nemoguardrails.utils import new_uuid
 
 log = logging.getLogger(__name__)
+
+_BEARER_RE = re.compile(r"(Bearer\s+)\S+", re.IGNORECASE)
+
+
+def _redact_invocation_params(params: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a copy of invocation params with auth tokens redacted."""
+    if "extra_headers" not in params:
+        return params
+    params = copy.copy(params)
+    headers = params["extra_headers"]
+    params["extra_headers"] = {
+        k: _BEARER_RE.sub(r"\1[REDACTED]", v) if "authorization" in k.lower() else v for k, v in headers.items()
+    }
+    return params
 
 
 class LoggingCallbackHandler(AsyncCallbackHandler):
@@ -64,7 +80,7 @@ class LoggingCallbackHandler(AsyncCallbackHandler):
         if explain_info:
             explain_info.llm_calls.append(llm_call_info)
 
-        log.info("Invocation Params :: %s", kwargs.get("invocation_params", {}))
+        log.info("Invocation Params :: %s", _redact_invocation_params(kwargs.get("invocation_params", {})))
         log.info(
             "Prompt :: %s",
             prompts[0],
@@ -123,7 +139,7 @@ class LoggingCallbackHandler(AsyncCallbackHandler):
             ]
         )
 
-        log.info("Invocation Params :: %s", kwargs.get("invocation_params", {}))
+        log.info("Invocation Params :: %s", _redact_invocation_params(kwargs.get("invocation_params", {})))
         log.info(
             "Prompt Messages :: %s",
             prompt,

@@ -22,6 +22,7 @@ from langchain_core.prompts import PromptTemplate
 from nemoguardrails import RailsConfig
 from nemoguardrails.actions import action
 from nemoguardrails.actions.llm.utils import (
+    get_extra_headers_for_llm,
     get_multiline_response,
     llm_call,
     strip_quotes,
@@ -79,7 +80,11 @@ async def self_check_hallucination(
 
         # Generate multiple responses with temperature 1.
         # Bind the config parameters to the LLM for this call
-        llm_with_config = llm.bind(temperature=1.0, n=num_responses)
+        bind_kwargs = {"temperature": 1.0, "n": num_responses}
+        extra_headers = get_extra_headers_for_llm(llm)
+        if extra_headers:
+            bind_kwargs["extra_headers"] = extra_headers
+        llm_with_config = llm.bind(**bind_kwargs)
         extra_llm_response = await llm_with_config.agenerate(
             [formatted_prompt],
             callbacks=logging_callback_manager_for_chain.handlers,

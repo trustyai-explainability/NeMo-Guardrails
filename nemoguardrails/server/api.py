@@ -14,7 +14,6 @@
 # limitations under the License.
 
 import asyncio
-import contextvars
 import copy
 import importlib.util
 import json
@@ -37,6 +36,7 @@ from starlette.responses import StreamingResponse
 from starlette.staticfiles import StaticFiles
 
 from nemoguardrails import LLMRails, RailsConfig, utils
+from nemoguardrails.context import api_request_headers_var
 from nemoguardrails.rails.llm.config import Model
 from nemoguardrails.rails.llm.options import (
     ActivatedRail,
@@ -90,9 +90,6 @@ class GuardrailsApp(FastAPI):
 registered_loggers: List[Callable] = []
 
 api_description = """Guardrails Sever API."""
-
-# The headers for each request
-api_request_headers: contextvars.ContextVar = contextvars.ContextVar("headers")
 
 # The datastore that the Server should use.
 # This is currently used only for storing threads.
@@ -306,9 +303,13 @@ def _update_models_in_config(config: RailsConfig, main_model: Model) -> RailsCon
             break
 
     if main_model_index is not None:
-        parameters = {**models[main_model_index].parameters, **main_model.parameters}
+        existing = models[main_model_index]
+        parameters = {**existing.parameters, **main_model.parameters}
+        # Preserve api_key_env_var from the original config if the override doesn't set one
+        api_key_env_var = main_model.api_key_env_var or existing.api_key_env_var
         models[main_model_index] = main_model
         models[main_model_index].parameters = parameters
+        models[main_model_index].api_key_env_var = api_key_env_var
     else:
         models.append(main_model)
 
@@ -479,7 +480,7 @@ async def chat_completion(body: GuardrailsChatCompletionRequest, request: Reques
         asyncio.get_event_loop().create_task(logger({"endpoint": "/v1/chat/completions", "body": body.json()}))
 
     # Save the request headers in a context variable.
-    api_request_headers.set(request.headers)
+    api_request_headers_var.set(dict(request.headers))
 
     # Use Request config_ids if set, otherwise use the FastAPI default config.
     # If neither is available we can't generate any completions as we have no config_id
@@ -1103,7 +1104,7 @@ async def guardrail_checks(body: GuardrailsChatCompletionRequest, request: Reque
             )
         )
 
-    api_request_headers.set(request.headers)
+    api_request_headers_var.set(dict(request.headers))
 
     async def process_checks():
         """Process guardrail checks and yield results.

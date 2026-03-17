@@ -25,6 +25,8 @@ from langchain_core.runnables.base import Runnable
 from nemoguardrails.colang.v2_x.lang.colang_ast import Flow
 from nemoguardrails.colang.v2_x.runtime.flows import InternalEvent, InternalEvents
 from nemoguardrails.context import (
+    api_request_headers_var,
+    get_llm_needs_runtime_auth,
     llm_call_info_var,
     llm_response_metadata_var,
     reasoning_trace_var,
@@ -52,6 +54,45 @@ BASE_URL_ATTRIBUTES = [
     "api_host",
     "endpoint",
 ]
+
+
+_INFRA_PREFIXES = ("x-forwarded", "x-real-", "x-request-id", "x-remote-")
+
+
+def get_extra_headers_from_request(forward_auth: bool = True) -> Optional[Dict[str, str]]:
+    """Forward X-* headers from the incoming request to the LLM call.
+
+    Excludes proxy/infra headers and the inbound Authorization header (which
+    typically carries K8s/proxy auth and must never be forwarded to the LLM).
+    When forward_auth is True, forwards X-Authorization as Authorization to
+    the LLM provider.
+    """
+    request_headers = api_request_headers_var.get()
+    if not request_headers:
+        return None
+
+    extra_headers = {}
+
+    for k, v in request_headers.items():
+        lower = k.lower()
+        if lower in ("authorization", "x-authorization"):
+            continue
+        if lower.startswith("x-") and not lower.startswith(_INFRA_PREFIXES):
+            extra_headers[k] = v
+
+    if forward_auth:
+        auth = request_headers.get("x-authorization")
+        if auth:
+            extra_headers["Authorization"] = auth
+
+    return extra_headers or None
+
+
+def get_extra_headers_for_llm(llm: "BaseLanguageModel") -> Dict[str, str]:
+    """Return extra_headers dict for an LLM based on its runtime auth needs."""
+    needs_runtime_auth = get_llm_needs_runtime_auth(llm)
+    extra_headers = get_extra_headers_from_request(forward_auth=needs_runtime_auth)
+    return extra_headers or {}
 
 
 def _infer_provider_from_module(llm: BaseLanguageModel) -> Optional[str]:
@@ -224,6 +265,15 @@ async def llm_call(
         llm_params_with_stop = llm_params
 
     filtered_params = _filter_params_for_openai_reasoning_models(llm, llm_params_with_stop)
+
+    # Forward X-* headers from the incoming request. Only forward Authorization
+    # to models that need runtime auth (i.e. had no valid static API key at init).
+    needs_runtime_auth = get_llm_needs_runtime_auth(llm)
+    extra_headers = get_extra_headers_from_request(forward_auth=needs_runtime_auth)
+    if extra_headers:
+        filtered_params = filtered_params.copy() if filtered_params else {}
+        filtered_params["extra_headers"] = extra_headers
+
     generation_llm: Union[BaseLanguageModel, Runnable] = llm.bind(**filtered_params) if filtered_params else llm
 
     if streaming_handler:
