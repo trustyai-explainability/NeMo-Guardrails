@@ -1,0 +1,39 @@
+define flow check forbidden words
+  $result = execute check_forbidden_words
+
+  if $result.status == "blocked"
+    bot inform forbidden content
+    stop
+
+define bot inform forbidden content
+  "I can't answer questions about closed source AI models"
+
+define flow check output length
+  $result = execute check_output_length
+
+  if $result == "blocked"
+    bot inform output too long
+    stop
+
+define bot inform output too long
+  "The response is too long."
+
+define subflow check tool response safety
+  $safe = execute check_tool_response_safety(tool_message=$tool_message)
+
+  if $safe == "blocked"
+    bot inform unsafe tool response
+    abort
+
+define bot inform unsafe tool response
+  "Tool response blocked."
+
+define subflow check tool call safety
+  $safe = execute check_tool_call_safety(tool_calls=$tool_calls)
+
+  if $safe == "blocked"
+    bot inform unsafe tool call
+    abort
+
+define bot inform unsafe tool call
+  "Tool call not allowed."

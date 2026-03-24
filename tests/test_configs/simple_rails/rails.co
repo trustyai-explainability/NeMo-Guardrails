@@ -1,0 +1,19 @@
+define flow check forbidden words
+  $result = execute check_forbidden_words
+
+  if $result.status == "blocked"
+    bot inform forbidden content
+    stop
+
+define bot inform forbidden content
+  "I can't answer questions about closed source AI models"
+
+define flow check output length
+  $result = execute check_output_length
+
+  if $result == "blocked"
+    bot inform output too long
+    stop
+
+define bot inform output too long
+  "The response is too long."
