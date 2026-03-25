@@ -138,7 +138,7 @@ class GuardrailsDataInput(BaseModel):
             config_fields = [data.get("config_id"), data.get("config_ids"), data.get("config")]
             non_none_count = sum(1 for field in config_fields if field is not None)
             if non_none_count > 1:
-                raise ValueError("Only one of config, config_id, or config_ids should be specified")
+                raise ValueError("Only one of config_id or config_ids should be specified")
         return data
 
     @field_validator("config_ids", mode="before")

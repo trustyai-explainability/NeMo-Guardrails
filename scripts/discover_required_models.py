@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -77,16 +77,8 @@ class ModelDiscoverer:
             logging.error(f"Missing directory: {library_path}")
             sys.exit(1)
 
-        available = [
-            item.name
-            for item in library_path.iterdir()
-            if item.is_dir() and not item.name.startswith("_")
-        ]
-        return (
-            available
-            if include_closed
-            else [gr for gr in available if gr not in closed_source]
-        )
+        available = [item.name for item in library_path.iterdir() if item.is_dir() and not item.name.startswith("_")]
+        return available if include_closed else [gr for gr in available if gr not in closed_source]
 
     @staticmethod
     def _extract_from_ast(tree: ast.AST) -> Dict[str, Set[str]]:
@@ -94,25 +86,13 @@ class ModelDiscoverer:
         for node in ast.walk(tree):
             if (
                 isinstance(node, ast.Call)
-                and getattr(getattr(node.func, "attr", None), "lower", lambda: "")()
-                == "load"
+                and getattr(getattr(node.func, "attr", None), "lower", lambda: "")() == "load"
                 and getattr(getattr(node.func, "value", None), "id", None) == "spacy"
             ):
-                if (
-                    node.args
-                    and isinstance(node.args[0], ast.Constant)
-                    and isinstance(node.args[0].value, str)
-                ):
+                if node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
                     models["spacy"].add(node.args[0].value)
-            if (
-                isinstance(node, ast.Call)
-                and getattr(node.func, "id", None) == "SentenceTransformer"
-            ):
-                if (
-                    node.args
-                    and isinstance(node.args[0], ast.Constant)
-                    and isinstance(node.args[0].value, str)
-                ):
+            if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "SentenceTransformer":
+                if node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
                     name = node.args[0].value
                     if not name.startswith("sentence-transformers/"):
                         name = f"sentence-transformers/{name}"
@@ -130,11 +110,7 @@ class ModelDiscoverer:
                 and getattr(node.func, "attr", None) == "download"
                 and getattr(getattr(node.func, "value", None), "id", None) == "nltk"
             ):
-                if (
-                    node.args
-                    and isinstance(node.args[0], ast.Constant)
-                    and isinstance(node.args[0].value, str)
-                ):
+                if node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
                     models["nltk"].add(node.args[0].value)
         return models
 
@@ -182,9 +158,7 @@ class ModelDiscoverer:
     def print_summary(self):
         active_guardrails = self.get_active_guardrails()
         print(f"Discovering models for profile: {self.profile}")
-        print(
-            f"Active guardrails ({len(active_guardrails)}): {', '.join(active_guardrails)}"
-        )
+        print(f"Active guardrails ({len(active_guardrails)}): {', '.join(active_guardrails)}")
         for category in self.MODEL_KEYS:
             models = self.models[category]
             if models:

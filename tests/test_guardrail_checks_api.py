@@ -27,13 +27,23 @@ Tests cover the most common real-world usage patterns:
 
 import json
 import os
+from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
 
 from nemoguardrails.server import api
+from tests.utils import FakeLLM
 
 client = TestClient(api.app)
+
+_fake_llm = FakeLLM(responses=["I don't know."])
+
+
+def _mock_init_llm_model(**kwargs):
+    """Return a FakeLLM instead of initializing a real provider."""
+    _fake_llm.i = 0
+    return _fake_llm
 
 
 @pytest.fixture(scope="function", autouse=True)
@@ -43,7 +53,11 @@ def setup_test_config():
     api.app.rails_config_path = os.path.normpath(test_configs_path)
     api.app.default_config_id = "simple_rails"
     api.app.single_config_mode = False
-    yield
+    with patch(
+        "nemoguardrails.rails.llm.llmrails.init_llm_model",
+        side_effect=_mock_init_llm_model,
+    ):
+        yield
     api.llm_rails_instances.clear()
 
 
@@ -71,7 +85,7 @@ def test_user_message_blocked():
         "/v1/guardrail/checks",
         json={
             "model": "test",
-            "messages": [{"role": "user", "content": "Can you tell me how this compares to ChatGPT?"}],
+            "messages": [{"role": "user", "content": "How does this compare to ChatGPT?"}],
             "guardrails": {"config_id": "simple_rails"},
         },
     )

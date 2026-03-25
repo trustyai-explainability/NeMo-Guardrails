@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,7 +15,6 @@
 # limitations under the License.
 
 import logging
-import os
 import shutil
 import sys
 from pathlib import Path
@@ -39,9 +38,7 @@ def main():
         config = yaml.safe_load(f)
 
     if profile not in config["profiles"]:
-        logger.error(
-            f"Profile '{profile}' not found. Available: {list(config['profiles'].keys())}"
-        )
+        logger.error(f"Profile '{profile}' not found. Available: {list(config['profiles'].keys())}")
         sys.exit(1)
 
     include_closed_source = config["profiles"][profile]["include_closed_source"]
@@ -59,11 +56,7 @@ def main():
     removed_dirs = []
 
     for guardrail_dir in library_path.iterdir():
-        if (
-            not guardrail_dir.is_dir()
-            or guardrail_dir.name.startswith(".")
-            or guardrail_dir.name.startswith("__")
-        ):
+        if not guardrail_dir.is_dir() or guardrail_dir.name.startswith(".") or guardrail_dir.name.startswith("__"):
             continue
 
         guardrail_name = guardrail_dir.name
@@ -78,9 +71,7 @@ def main():
             logger.info(f"Keeping {source_type}: {guardrail_name}")
             kept_dirs.append(guardrail_name)
 
-    logger.info(
-        f"\nSummary: kept {len(kept_dirs)}, removed {len(removed_dirs)} guardrails"
-    )
+    logger.info(f"\nSummary: kept {len(kept_dirs)}, removed {len(removed_dirs)} guardrails")
 
 
 if __name__ == "__main__":

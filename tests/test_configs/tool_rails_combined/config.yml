@@ -1,0 +1,25 @@
+models:
+  - type: main
+    engine: openai
+    model: test
+
+instructions:
+  - type: general
+    content: |
+      You are a helpful assistant.
+
+passthrough: true
+
+rails:
+  input:
+    flows:
+      - check forbidden words
+  output:
+    flows:
+      - check output length
+  tool_input:
+    flows:
+      - check tool response safety
+  tool_output:
+    flows:
+      - check tool call safety
