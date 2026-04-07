@@ -4,6 +4,16 @@
 CONFIG_ID="${CONFIG_ID:-${1:-nemo}}"
 PORT="${PORT:-${2:-8000}}"
 
+# Validate inputs to prevent command injection
+if [[ ! "$CONFIG_ID" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+  echo "ERROR: CONFIG_ID contains invalid characters: $CONFIG_ID"
+  exit 1
+fi
+if [[ ! "$PORT" =~ ^[0-9]+$ ]]; then
+  echo "ERROR: PORT is not a valid number: $PORT"
+  exit 1
+fi
+
 CONFIG_DIR="/app/config/${CONFIG_ID}"
 
 echo "🚀 Starting NeMo Guardrails with config from: $CONFIG_DIR (port: $PORT)"
@@ -20,8 +30,19 @@ if [[ ! -f "$CONFIG_DIR/rails.co" ]]; then
 fi
 
 echo "✅ Configuration validated. Starting server..."
-exec /app/.venv/bin/nemoguardrails server \
+
+CMD=(/app/.venv/bin/nemoguardrails server \
   --config "/app/config" \
   --port "$PORT" \
   --default-config-id "$CONFIG_ID" \
-  --disable-chat-ui
+  --disable-chat-ui)
+
+# If OTEL_EXPORTER_OTLP_ENDPOINT is set and opentelemetry-instrument is available,
+# wrap the server with auto-instrumentation
+if [[ -n "$OTEL_EXPORTER_OTLP_ENDPOINT" ]] && command -v opentelemetry-instrument &>/dev/null; then
+  echo "OpenTelemetry enabled: endpoint=$OTEL_EXPORTER_OTLP_ENDPOINT service=${OTEL_SERVICE_NAME:-nemo-guardrails}"
+  export OTEL_SERVICE_NAME="${OTEL_SERVICE_NAME:-nemo-guardrails}"
+  exec opentelemetry-instrument "${CMD[@]}"
+else
+  exec "${CMD[@]}"
+fi
