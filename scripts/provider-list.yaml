@@ -19,3 +19,4 @@ closed_source_guardrails:
   - "clavata"
   - "prompt_security"
   - "gcp_moderate_text"
+  - "jailbreak_detection"
