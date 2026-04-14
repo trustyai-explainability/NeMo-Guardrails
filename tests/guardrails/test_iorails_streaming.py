@@ -28,8 +28,6 @@ from nemoguardrails.rails.llm.config import RailsConfig
 from nemoguardrails.rails.llm.options import GenerationOptions
 from tests.guardrails.test_data import NEMOGUARDS_CONFIG
 
-# --- Helpers / factories ------------------------------------------------
-
 
 def _make_streaming_config(*, enabled: bool = True, stream_first: bool = True) -> dict:
     """Build a NEMOGUARDS_CONFIG variant with output-rail streaming settings."""
@@ -100,7 +98,7 @@ def _wire_mocks(iorails, *, input_safe=True, output_safe=True, stream=_mock_stre
     iorails.rails_manager.is_output_safe = AsyncMock(
         return_value=RailResult(is_safe=output_safe, reason=None if output_safe else "blocked")
     )
-    iorails.model_manager.stream_async = stream
+    iorails.engine_registry.stream_model_call = stream
 
 
 @pytest.fixture
@@ -227,9 +225,6 @@ class TestStreamAsyncNoOutputRails:
         assert captured_kwargs.get("temperature") == 0.42
 
 
-# --- Tests: Output rails with stream_first=True -------------------------
-
-
 class TestStreamAsyncOutputRailsStreamFirst:
     """Test streaming with output rails in stream_first=True mode (optimistic)."""
 
@@ -274,9 +269,6 @@ class TestStreamAsyncOutputRailsStreamFirst:
         first_chunk_idx = next(i for i, v in enumerate(yield_order) if v.startswith("chunk:"))
         first_rail_idx = next(i for i, v in enumerate(yield_order) if v == "rail_check")
         assert first_chunk_idx < first_rail_idx
-
-
-# --- Tests: Output rails with stream_first=False ------------------------
 
 
 class TestStreamAsyncOutputRailsGated:
@@ -401,8 +393,7 @@ class TestStreamAsyncConcurrency:
         iorails_input_only._stream_semaphore = asyncio.Semaphore(0)
 
         with pytest.raises(asyncio.QueueFull, match="Streaming concurrency limit reached"):
-            async for _ in iorails_input_only.stream_async(messages=[{"role": "user", "content": "hi"}]):
-                pass
+            await anext(iorails_input_only.stream_async(messages=[{"role": "user", "content": "hi"}]))
 
     @pytest.mark.asyncio
     async def test_semaphore_released_after_stream(self, iorails_input_only):
@@ -427,7 +418,7 @@ class TestStreamAsyncConcurrency:
 
         _wire_mocks(iorails_input_only, stream=slow_stream)
 
-        async for chunk in iorails_input_only.stream_async(messages=[{"role": "user", "content": "hi"}]):
+        async for _ in iorails_input_only.stream_async(messages=[{"role": "user", "content": "hi"}]):
             if task_started.is_set():
                 break  # consumer exits early
 
