@@ -8,15 +8,20 @@ profiles:
     description: "All available guardrails (open + closed source)"
     include_closed_source: true
 
-# Define which guardrails are closed source (everything else is considered open source)
+# Define which guardrails are closed source or otherwise known to not work as expected (everything else is considered open source)
 closed_source_guardrails:
   - "activefence"
+  - "ai_defense"
+  - "autoalign"
+  - "clavata"
   - "cleanlab"
-  - "clavata"
-  - "privateai"
+  - "crowdstrike_aidr"
   - "fiddler"
-  - "patronusai"
-  - "clavata"
-  - "prompt_security"
   - "gcp_moderate_text"
-  - "jailbreak_detection"
+  - "jailbreak_detection" # waiting on upstream fixes: https://github.com/NVIDIA-NeMo/Guardrails/issues/1739
+  - "pangea"
+  - "patronusai"
+  - "policyai"
+  - "privateai"
+  - "prompt_security"
+  - "trend_micro"
