@@ -29,6 +29,8 @@ from nemoguardrails.guardrails.guardrails_types import REQUEST_ID_HEX_CHARS
 from nemoguardrails.guardrails.telemetry import (
     get_tracer,
     is_tracing_enabled,
+    mark_rail_stop,
+    record_span_error,
     request_span,
     trace_id_to_request_id,
 )
@@ -198,6 +200,50 @@ class TestRequestSpan:
         spans = exporter.get_finished_spans()
         assert len(spans) == 1
         assert spans[0].end_time is not None
+
+
+class TestRecordSpanError:
+    def test_noop_when_span_is_none(self):
+        # Should not raise
+        record_span_error(None, RuntimeError("boom"))
+
+    def test_records_on_live_span(self, otel_provider):
+        provider, exporter = otel_provider
+        tracer = provider.get_tracer("test")
+        with tracer.start_as_current_span("test") as span:
+            record_span_error(span, ValueError("bad"))
+
+        finished = exporter.get_finished_spans()[0]
+        assert finished.status.status_code == StatusCode.ERROR
+        exc_events = [e for e in finished.events if e.name == "exception"]
+        assert len(exc_events) == 1
+        assert exc_events[0].attributes["exception.type"] == "ValueError"
+
+
+class TestMarkRailStop:
+    """``mark_rail_stop`` encapsulates the None-span + rail-safe conditional."""
+
+    def test_noop_when_span_is_none(self):
+        # Tracer disabled → rail_span yields None; helper must not crash.
+        mark_rail_stop(None, is_safe=False)
+
+    def test_sets_attribute_when_rail_blocks(self, otel_provider):
+        provider, exporter = otel_provider
+        tracer = provider.get_tracer("test")
+        with tracer.start_as_current_span("test") as span:
+            mark_rail_stop(span, is_safe=False)
+
+        attrs = dict(exporter.get_finished_spans()[0].attributes)
+        assert attrs["rail.stop"] is True
+
+    def test_does_not_set_attribute_when_rail_passes(self, otel_provider):
+        provider, exporter = otel_provider
+        tracer = provider.get_tracer("test")
+        with tracer.start_as_current_span("test") as span:
+            mark_rail_stop(span, is_safe=True)
+
+        attrs = dict(exporter.get_finished_spans()[0].attributes)
+        assert "rail.stop" not in attrs
 
 
 class TestIsTracingEnabled:

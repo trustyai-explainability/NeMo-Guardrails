@@ -65,7 +65,12 @@ class IORails:
         self._running = False
         self.config = config
 
-        self.engine_registry = EngineRegistry(config.models, config.rails.config)
+        # Create the OTEL tracer (if enabled in config).
+        # Pass to EngineRegistry and RailsManager to keep all spans consistent under parent
+        self._tracing_enabled = is_tracing_enabled(config.tracing)
+        self._tracer = get_tracer() if self._tracing_enabled else None
+
+        self.engine_registry = EngineRegistry(config.models, config.rails.config, tracer=self._tracer)
         self.rails_manager = RailsManager(
             engine_registry=self.engine_registry,
             task_manager=LLMTaskManager(config),
@@ -73,14 +78,11 @@ class IORails:
             output_flows=config.rails.output.flows,
             input_parallel=config.rails.input.parallel or False,
             output_parallel=config.rails.output.parallel or False,
+            tracer=self._tracer,
         )
 
         # Semaphore for streaming concurrency control / load shedding
         self._stream_semaphore = asyncio.Semaphore(STREAM_MAX_CONCURRENCY)
-
-        # Inline OTEL instrumentation
-        self._tracing_enabled = is_tracing_enabled(config.tracing)
-        self._tracer = get_tracer() if self._tracing_enabled else None
 
     @property
     def _has_streaming_output_rails(self) -> bool:
@@ -124,6 +126,7 @@ class IORails:
         """Synchronous version of generate_async."""
 
         async def _run_sync_iorails():
+            """Spin up a short-lived IORails engine for one synchronous generate call."""
             async with IORails(self.config) as iorails_engine:
                 return await iorails_engine.generate_async(messages, **kwargs)
 
@@ -281,6 +284,8 @@ class IORails:
 
         async def _wrapped_iterator():
             """Wrap the base iterator with semaphore-based concurrency control."""
+            # TODO Streaming instrumentation handled in follow-on PR
+
             # Ensure engines are running (idempotent if already started).
             await self.start()
 

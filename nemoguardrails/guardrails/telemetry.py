@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING, Generator, Optional, Tuple
 from nemoguardrails.guardrails.guardrails_types import (
     REQUEST_ID_BYTES,
     REQUEST_ID_HEX_CHARS,
+    RailDirection,
     _set_request_id,
     get_request_id,
     reset_request_id,
@@ -41,6 +42,7 @@ from nemoguardrails.guardrails.guardrails_types import (
 )
 from nemoguardrails.tracing.constants import (
     GenAIAttributes,
+    GuardrailsAttributes,
     OperationNames,
     SpanNames,
     SystemConstants,
@@ -118,6 +120,34 @@ def trace_id_to_request_id(span: "Span") -> str:
     return format_trace_id(ctx.trace_id)[-REQUEST_ID_HEX_CHARS:]
 
 
+def record_span_error(span: Optional["Span"], exc: BaseException) -> None:
+    """Record an exception on an OTEL span and set its status to ERROR.
+
+    Also sets the ``error.type`` attribute to the exception's class name
+    (per OTEL GenAI conditional-required convention).  Safe to call with
+    ``None`` (no-op).  Use from every span helper's ``except`` block and
+    from callers that swallow exceptions before they can propagate.
+    """
+    if span is None:
+        return
+    span.set_attribute("error.type", type(exc).__name__)
+    span.record_exception(exc)
+    span.set_status(StatusCode.ERROR, str(exc))
+
+
+def mark_rail_stop(span: Optional["Span"], is_safe: bool) -> None:
+    """Set ``rail.stop=True`` on a rail span when the rail blocked the request.
+
+    Safe to call with ``None`` (no-op) so callers don't have to branch on
+    whether a real span was produced — matches the ``record_span_error``
+    idiom.  Only marks stop when *is_safe* is ``False``; a passing rail
+    leaves the attribute unset.
+    """
+    if span is None or is_safe:
+        return
+    span.set_attribute(GuardrailsAttributes.RAIL_STOP, True)
+
+
 @contextmanager
 def request_span(tracer: "Tracer") -> Generator[Tuple["Span", str], None, None]:
     """Create a live ``guardrails.request`` SERVER span.
@@ -139,8 +169,123 @@ def request_span(tracer: "Tracer") -> Generator[Tuple["Span", str], None, None]:
         try:
             yield span, req_id
         except Exception as exc:
-            span.record_exception(exc)
-            span.set_status(StatusCode.ERROR, str(exc))
+            record_span_error(span, exc)
+            raise
+
+
+@contextmanager
+def rail_span(
+    tracer: Optional["Tracer"], flow: str, direction: RailDirection
+) -> Generator[Optional["Span"], None, None]:
+    """Create a ``guardrails.rail`` INTERNAL span for a single rail execution.
+
+    Yields the span (or ``None`` when *tracer* is ``None``).
+    The caller should set ``rail.stop`` on the span after execution if the
+    rail blocked the request.
+    """
+    if tracer is None:
+        yield None
+        return
+    with tracer.start_as_current_span(
+        SpanNames.GUARDRAILS_RAIL,
+        kind=SpanKind.INTERNAL,
+        record_exception=False,
+        set_status_on_exception=False,
+    ) as span:
+        span.set_attribute(GuardrailsAttributes.RAIL_TYPE, direction.value)
+        span.set_attribute(GuardrailsAttributes.RAIL_NAME, flow)
+        try:
+            yield span
+        except Exception as exc:
+            record_span_error(span, exc)
+            raise
+
+
+@contextmanager
+def action_span(tracer: Optional["Tracer"], action_name: str) -> Generator[Optional["Span"], None, None]:
+    """Create a ``guardrails.action`` INTERNAL span for a rail action execution.
+
+    Yields the span (or ``None`` when *tracer* is ``None``).
+    """
+    if tracer is None:
+        yield None
+        return
+    with tracer.start_as_current_span(
+        SpanNames.GUARDRAILS_ACTION,
+        kind=SpanKind.INTERNAL,
+        record_exception=False,
+        set_status_on_exception=False,
+    ) as span:
+        span.set_attribute(GuardrailsAttributes.ACTION_NAME, action_name)
+        try:
+            yield span
+        except Exception as exc:
+            record_span_error(span, exc)
+            raise
+
+
+@contextmanager
+def llm_call_span(
+    tracer: Optional["Tracer"],
+    model_name: str,
+    provider_name: str,
+    operation_name: str = "chat",
+) -> Generator[Optional["Span"], None, None]:
+    """Create a CLIENT span for an LLM call following GenAI semantic conventions.
+
+    Span name follows the OTEL pattern: ``"{operation_name} {model_name}"``.
+
+    ``operation_name`` defaults to ``"chat"`` because IORails only issues
+    chat completions. In the future if any other non-chat LLM  operations are
+    supported, callers should pass an explicit ``operation_name`` from the
+    OTEL GenAI semantic conventions.
+
+    Yields the span (or ``None`` when *tracer* is ``None``).
+    """
+    if tracer is None:
+        yield None
+        return
+    span_name = f"{operation_name} {model_name}"
+    with tracer.start_as_current_span(
+        span_name,
+        kind=SpanKind.CLIENT,
+        record_exception=False,
+        set_status_on_exception=False,
+    ) as span:
+        span.set_attribute(GenAIAttributes.GEN_AI_OPERATION_NAME, operation_name)
+        span.set_attribute(GenAIAttributes.GEN_AI_REQUEST_MODEL, model_name)
+        span.set_attribute(GenAIAttributes.GEN_AI_PROVIDER_NAME, provider_name)
+        try:
+            yield span
+        except Exception as exc:
+            record_span_error(span, exc)
+            raise
+
+
+@contextmanager
+def api_call_span(tracer: Optional["Tracer"], api_name: str) -> Generator[Optional["Span"], None, None]:
+    """Create a CLIENT span for a non-LLM API call (e.g., jailbreak detection).
+
+    Uses the ``api.name`` attribute rather than ``gen_ai.operation.name``
+    because these APIs are plain HTTP endpoints, not GenAI operations.
+    ``http.*`` transport attributes can be added additively later without
+    conflict.  Yields the span (or ``None`` when *tracer* is ``None``).
+    """
+    if tracer is None:
+        yield None
+        return
+    span_name = f"api {api_name}"
+    with tracer.start_as_current_span(
+        span_name,
+        kind=SpanKind.CLIENT,
+        record_exception=False,
+        set_status_on_exception=False,
+    ) as span:
+        span.set_attribute(GuardrailsAttributes.API_NAME, api_name)
+        try:
+            yield span
+        except Exception as exc:
+            record_span_error(span, exc)
             raise
 
 
@@ -177,7 +322,7 @@ def traced_request(tracer: Optional["Tracer"]) -> Generator[str, None, None]:
     on exit.
     """
     if tracer is not None:
-        with request_span(tracer) as (_span, req_id):
+        with request_span(tracer) as (_, req_id):
             token = _set_request_id(req_id)
             try:
                 yield req_id
