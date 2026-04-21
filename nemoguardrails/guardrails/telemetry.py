@@ -29,7 +29,7 @@ import logging
 import secrets
 import warnings
 from contextlib import contextmanager
-from typing import TYPE_CHECKING, Generator, Optional, Tuple
+from typing import TYPE_CHECKING, Generator, NamedTuple, Optional, Tuple
 
 from nemoguardrails.guardrails.guardrails_types import (
     REQUEST_ID_BYTES,
@@ -310,27 +310,68 @@ def is_tracing_enabled(config_tracing: Optional["TracingConfig"]) -> bool:
     return True
 
 
+class TracedRequest(NamedTuple):
+    """Handle yielded by ``traced_request``.
+
+    ``span`` is the IORails ``guardrails.request`` span when tracing is
+    enabled, or ``None`` when it is not.  ``request_id`` is always a
+    16-char hex string.  Unpacks as ``(span, request_id)`` for callers
+    that prefer positional access.
+    """
+
+    span: Optional["Span"]
+    request_id: str
+
+
+def _cleanup_request_id(token) -> None:
+    """Reset the request-ID ContextVar from a cleanup path, tolerating the
+    one expected ``ValueError``.
+
+    ``ContextVar.reset()`` raises ``ValueError("... was created in a
+    different Context")`` when called from a different asyncio Context
+    than where ``.set()`` was called.  That happens during async-generator
+    cleanup (``aclose()`` running in an outer task's context) and is the
+    only ``ValueError`` that ``reset_request_id`` raises today.  Any
+    other ``ValueError`` indicates an unexpected bug in the helper and is
+    re-raised so callers see it.
+    """
+    try:
+        reset_request_id(token)
+    except ValueError as exc:
+        if "different Context" not in str(exc):
+            raise
+
+
 @contextmanager
-def traced_request(tracer: Optional["Tracer"]) -> Generator[str, None, None]:
+def traced_request(tracer: Optional["Tracer"]) -> Generator[TracedRequest, None, None]:
     """Unified request context: sets request ID, optionally creates a span.
 
     When *tracer* is not ``None``, a live ``guardrails.request`` SERVER span
     is created and the request ID is derived from its trace ID.  When
-    *tracer* is ``None``, a random request ID is generated instead.
+    *tracer* is ``None``, a random request ID is generated and the yielded
+    span is ``None``.
 
-    Yields ``request_id``.  The request-ID ContextVar is always cleaned up
-    on exit.
+    Yields a :class:`TracedRequest` (``span``, ``request_id``).  Callers
+    that want to mark the request span ERROR from a deeply-nested scope
+    should capture the yielded span and pass it explicitly to
+    ``record_span_error`` — never rely on ``trace.get_current_span()``
+    which can return the host app's ambient span when IORails tracing is
+    disabled.
+
+    The request-ID ContextVar is always cleaned up on exit via
+    :func:`_cleanup_request_id`, which tolerates the expected
+    cross-context ``ValueError`` that async-generator cleanup can raise.
     """
     if tracer is not None:
-        with request_span(tracer) as (_, req_id):
+        with request_span(tracer) as (span, req_id):
             token = _set_request_id(req_id)
             try:
-                yield req_id
+                yield TracedRequest(span, req_id)
             finally:
-                reset_request_id(token)
+                _cleanup_request_id(token)
     else:
         token = set_new_request_id()
         try:
-            yield get_request_id()
+            yield TracedRequest(None, get_request_id())
         finally:
-            reset_request_id(token)
+            _cleanup_request_id(token)
