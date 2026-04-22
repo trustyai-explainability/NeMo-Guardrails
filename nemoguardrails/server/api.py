@@ -47,6 +47,7 @@ from nemoguardrails.rails.llm.options import (
     GenerationResponse,
     GenerationStats,
 )
+from nemoguardrails.server.anthropic_serving import register_anthropic_routes
 from nemoguardrails.server.datastore.datastore import DataStore
 from nemoguardrails.server.schemas.openai import (
     GuardrailCheckResponse,
@@ -1339,3 +1340,8 @@ class GuardrailsConfigurationError(Exception):
 #
 #
 # register_exception(app)
+
+# ---------------------------------------------------------------------------
+# Anthropic Messages API (/v1/messages)
+# ---------------------------------------------------------------------------
+register_anthropic_routes(app)
