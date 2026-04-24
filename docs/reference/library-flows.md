@@ -1,6 +1,6 @@
 # NeMo Guardrails Library Flows
 
-    
+
 This document lists all available flows in the NeMo Guardrails library.
 
 ## Understanding the tables

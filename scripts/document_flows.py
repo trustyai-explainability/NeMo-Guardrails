@@ -40,7 +40,7 @@ def _get_title() -> str:
 def _get_preamble() -> str:
     """Get the common dependency explanation text."""
     return """
-    
+
 This document lists all available flows in the NeMo Guardrails library.
 
 ## Understanding the tables
@@ -84,8 +84,10 @@ To view the example, navigate to the specified directory within the `example/con
 
 """
 
+
 CHECK = "✔"
 CROSS = "✗"
+
 
 @dataclass
 class Flow:
@@ -99,6 +101,7 @@ class Flow:
     is_self_contained: bool = True  # No external network calls
     uses_llm: bool = False  # Uses LLM from config.models
     actions: List[str] = field(default_factory=list)  # List of actions called by this flow
+
 
 class FlowAnalyzer:
     """Analyzes Colang flow files and categorizes flows."""
@@ -133,7 +136,13 @@ class FlowAnalyzer:
         re.compile(r"await\s+llm\."),
     ]
 
-    def __init__(self, library_path: Path, provider_list_path: Optional[Path], project_root: Path, output_path: Optional[Path] = None):
+    def __init__(
+        self,
+        library_path: Path,
+        provider_list_path: Optional[Path],
+        project_root: Path,
+        output_path: Optional[Path] = None,
+    ):
         self.library_path = library_path
         self.provider_list_path = provider_list_path
         self.project_root = project_root
@@ -624,6 +633,7 @@ class FlowAnalyzer:
         except ValueError:
             # Paths don't share a common base, use os.path.relpath
             import os
+
             return os.path.relpath(str(target), str(output_dir))
 
     def _format_table_header(self, category_key: str, category_title: str, header_prefix: str) -> List[str]:
@@ -635,7 +645,9 @@ class FlowAnalyzer:
         output.append("")
         return output
 
-    def _format_table_asciidoc(self, category_key: str, category_title: str, flows: List[Flow], include_links: bool = False) -> List[str]:
+    def _format_table_asciidoc(
+        self, category_key: str, category_title: str, flows: List[Flow], include_links: bool = False
+    ) -> List[str]:
         """Format a table in AsciiDoc format."""
         output = self._format_table_header(category_key, category_title, "==")
         output.append('[cols="2,1,1,1,2,6", options="header"]')
@@ -667,19 +679,23 @@ class FlowAnalyzer:
             else:
                 examples = "N/A"
 
-            output.append(
-                f"| `{flow.name}` | {library} | {llm_usage} | {requires_external} | {desc} | {examples}"
-            )
+            output.append(f"| `{flow.name}` | {library} | {llm_usage} | {requires_external} | {desc} | {examples}")
 
         output.append("|===")
         output.append("")
         return output
 
-    def _format_table_markdown(self, category_key: str, category_title: str, flows: List[Flow], include_links: bool = False) -> List[str]:
+    def _format_table_markdown(
+        self, category_key: str, category_title: str, flows: List[Flow], include_links: bool = False
+    ) -> List[str]:
         """Format a table in Markdown format."""
         output = self._format_table_header(category_key, category_title, "##")
-        output.append("| Flow Name | Library (`nemoguardrails/library/...`) | Requires a Configured LLM | Requires External Server Calls | Description | Example Configs |")
-        output.append("|-----------|----------------------------------------|---------------------------|--------------------------------|-------------|-----------------|")
+        output.append(
+            "| Flow Name | Library (`nemoguardrails/library/...`) | Requires a Configured LLM | Requires External Server Calls | Description | Example Configs |"
+        )
+        output.append(
+            "|-----------|----------------------------------------|---------------------------|--------------------------------|-------------|-----------------|"
+        )
 
         for flow in sorted(flows, key=lambda f: (f.library, f.name)):
             llm_usage = CHECK if flow.uses_llm else CROSS
@@ -704,9 +720,7 @@ class FlowAnalyzer:
             else:
                 examples = "N/A"
 
-            output.append(
-                f"| `{flow.name}` | {library} | {llm_usage} | {requires_external} | {desc} | {examples} |"
-            )
+            output.append(f"| `{flow.name}` | {library} | {llm_usage} | {requires_external} | {desc} | {examples} |")
 
         output.append("")
         return output
