@@ -177,6 +177,10 @@ class RailStatus(BaseModel):
     """Status of a single rail execution."""
 
     status: str = Field(description="Status of the rail: 'success' or 'blocked'.")
+    reason: Optional[str] = Field(
+        default=None,
+        description="Explanation for why the rail blocked content. Only present when status is 'blocked'.",
+    )
 
 
 class MessageCheckResult(BaseModel):

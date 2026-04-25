@@ -49,8 +49,22 @@ def _extract_flow_code(file_content: str, flow_elements: List[dict]) -> Optional
 
     # If we have a range, we extract it
     if min_line >= 0:
-        # Exclude all non-blank lines
-        flow_lines = [_line for _line in content_lines[min_line : max_line + 1] if _line.strip() != ""]
+        # Walk backwards from min_line to capture any docstring lines (""" blocks)
+        start = min_line
+        in_docstring = False
+        for i in range(min_line - 1, -1, -1):
+            stripped = content_lines[i].strip()
+            if stripped == '"""' or stripped.endswith('"""'):
+                start = i
+                if in_docstring:
+                    break
+                in_docstring = True
+            elif in_docstring:
+                start = i
+            else:
+                break
+
+        flow_lines = [_line for _line in content_lines[start : max_line + 1] if _line.strip() != ""]
 
         return textwrap.dedent("\n".join(flow_lines))
 
