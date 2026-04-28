@@ -7,11 +7,11 @@ ARG PYYAML_VERSION=6.0.3
 ARG GUARDRAILS_PROFILE=opensource
 
 RUN dnf install -y --nodocs --setopt=install_weak_deps=False \
-        gcc \
-        gcc-c++ \
-        git && \
+    gcc \
+    gcc-c++ \
+    git && \
     pip install --no-cache-dir \
-        pyyaml==${PYYAML_VERSION} && \
+    pyyaml==${PYYAML_VERSION} && \
     dnf clean all && \
     rm -rf /var/cache/dnf /tmp/* /var/tmp/*
 
@@ -20,7 +20,7 @@ COPY nemoguardrails/ ./nemoguardrails/
 COPY scripts/ ./scripts/
 COPY examples/bots/ ./examples/bots/
 
-RUN chmod +x ./scripts/entrypoint.sh
+RUN chmod +x ./scripts/entrypoint.py
 RUN python3 ./scripts/filter_guardrails.py ./scripts/provider-list.yaml $GUARDRAILS_PROFILE
 
 ENV HF_HOME=/app/.cache/huggingface \
@@ -32,8 +32,8 @@ ENV HF_HOME=/app/.cache/huggingface \
 # Create virtual environment and install dependencies
 RUN python3 -m venv /app/.venv && \
     /app/.venv/bin/pip install --no-cache-dir \
-        --extra-index-url https://download.pytorch.org/whl/cpu \
-        -r requirements.txt && \
+    --extra-index-url https://download.pytorch.org/whl/cpu \
+    -r requirements.txt && \
     /app/.venv/bin/pip install --no-cache-dir --no-deps . && \
     rm -rf /root/.cache/pip /tmp/* /var/tmp/*
 
@@ -58,7 +58,7 @@ COPY --from=build /app /app
 RUN rm -f /etc/security/namespace.conf /usr/lib64/security/pam_namespace.so || true && \
     chgrp -R 0 /app && \
     chmod -R g=u /app && \
-    chmod +x /app/scripts/entrypoint.sh
+    chmod +x /app/scripts/entrypoint.py
 
 USER 1001
 
@@ -73,4 +73,4 @@ ENV HF_HOME=/app/.cache/huggingface \
     DO_NOT_TRACK=1
 
 EXPOSE 8000
-ENTRYPOINT ["./scripts/entrypoint.sh"]
+ENTRYPOINT ["./scripts/entrypoint.py"]
