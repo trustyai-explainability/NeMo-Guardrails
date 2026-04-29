@@ -338,13 +338,31 @@ def test_no_config_and_no_default():
     api.app.default_config_id = "simple_rails"
 
 
+def test_system_message_passes():
+    """System message triggers input rails and passes."""
+    response = client.post(
+        "/v1/guardrail/checks",
+        json={
+            "model": "test",
+            "messages": [{"role": "system", "content": "You are a helpful assistant"}],
+            "guardrails": {"config_id": "simple_rails"},
+        },
+    )
+
+    result = response.json()
+    assert result["status"] == "success"
+    assert len(result["messages"]) == 1
+    assert result["messages"][0]["role"] == "system"
+    assert result["messages"][0]["index"] == 0
+
+
 def test_unsupported_message_role():
     """Unsupported message role returns error."""
     response = client.post(
         "/v1/guardrail/checks",
         json={
             "model": "test",
-            "messages": [{"role": "system", "content": "You are a helpful assistant"}],
+            "messages": [{"role": "developer", "content": "some content"}],
             "guardrails": {"config_id": "simple_rails"},
         },
     )
