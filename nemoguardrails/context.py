@@ -62,3 +62,24 @@ tool_calls_var: contextvars.ContextVar[Optional[list]] = contextvars.ContextVar(
 llm_response_metadata_var: contextvars.ContextVar[Optional[dict]] = contextvars.ContextVar(
     "llm_response_metadata", default=None
 )
+
+# The request headers from the incoming API request (set by the server layer).
+# Used to forward Authorization and X-* headers to outgoing LLM calls.
+api_request_headers_var: contextvars.ContextVar[Optional[Dict[str, str]]] = contextvars.ContextVar(
+    "api_request_headers", default=None
+)
+
+# Registry tracking which LLM instances need runtime auth (i.e. had no valid
+# static API key at init time). Keyed by id(llm) — safe because LLM objects
+# are server-lifetime singletons created once in _init_llms().
+_llm_needs_runtime_auth: Dict[int, bool] = {}
+
+
+def set_llm_needs_runtime_auth(llm: Any, needs_auth: bool) -> None:
+    """Register whether an LLM instance needs runtime auth from request headers."""
+    _llm_needs_runtime_auth[id(llm)] = needs_auth
+
+
+def get_llm_needs_runtime_auth(llm: Any) -> bool:
+    """Check whether an LLM instance needs runtime auth from request headers."""
+    return _llm_needs_runtime_auth.get(id(llm), False)

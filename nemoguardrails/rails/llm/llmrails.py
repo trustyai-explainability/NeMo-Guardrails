@@ -66,6 +66,7 @@ from nemoguardrails.context import (
     generation_options_var,
     llm_stats_var,
     raw_llm_request,
+    set_llm_needs_runtime_auth,
     streaming_handler_var,
 )
 from nemoguardrails.embeddings.index import EmbeddingsIndex
@@ -369,18 +370,30 @@ class LLMRails:
             model_config: The model configuration object
 
         Returns:
-            dict: The prepared kwargs for model initialization
+            dict: kwargs dict for model initialization
         """
         # Make a copy to avoid modifying the original model config
         kwargs = dict(model_config.parameters) if model_config.parameters else {}
 
-        # If the optional API Key Environment Variable is set, add it to kwargs
         if model_config.api_key_env_var:
             api_key = os.environ.get(model_config.api_key_env_var)
             if api_key:
                 kwargs["api_key"] = api_key
+                kwargs["openai_api_key"] = api_key
+        elif "api_key" not in kwargs:
+            # Placeholder to satisfy LangChain constructors. Real auth arrives
+            # via forwarded request headers at call time. If no auth header is
+            # provided, the LLM call will fail with a 401 — this is the intended
+            # fail-safe: requests without valid auth are rejected by the provider.
+            kwargs["api_key"] = "runtime-provided"
+            kwargs["openai_api_key"] = "runtime-provided"
 
         return kwargs
+
+    @staticmethod
+    def _needs_runtime_auth(kwargs):
+        """Check if the model needs auth provided at request time."""
+        return kwargs.get("api_key") == "runtime-provided"
 
     def _init_llms(self):
         """
@@ -421,6 +434,7 @@ class LLMRails:
                     mode="chat",
                     kwargs=kwargs,
                 )
+                set_llm_needs_runtime_auth(self.llm, self._needs_runtime_auth(kwargs))
                 self.runtime.register_action_param("llm", self.llm)
 
             else:
@@ -453,6 +467,7 @@ class LLMRails:
                     mode=mode,
                     kwargs=kwargs,
                 )
+                set_llm_needs_runtime_auth(llm_model, self._needs_runtime_auth(kwargs))
 
                 # Configure the model based on its type
                 if llm_config.type == "main":
