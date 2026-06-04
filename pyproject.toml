@@ -86,8 +86,10 @@ aiofiles = { version = ">=24.1.0", optional = true }
 # otel auto-instrumentation (fork-specific)
 opentelemetry-distro = { version = ">=0.48b0", optional = true }
 opentelemetry-exporter-otlp = { version = ">=1.27.0,<2.0.0", optional = true }
+opentelemetry-exporter-prometheus = {version = ">=0.48b0", optional = true}
 opentelemetry-instrumentation-fastapi = { version = ">=0.48b0", optional = true }
 opentelemetry-instrumentation-httpx = { version = ">=0.48b0", optional = true }
+prometheus-fastapi-instrumentator = { version = ">=7.0.0", optional = true }
 
 # openai
 langchain-openai = { version = ">=0.1.0", optional = true }
@@ -139,7 +141,7 @@ jailbreak = ["yara-python"]
 models = ["torch", "spacy", "nltk", "sentence-transformers", "einops"]
 multilingual = ["fast-langdetect"]
 server = ["aiofiles", "openai"]
-otel = ["opentelemetry-distro", "opentelemetry-exporter-otlp", "opentelemetry-instrumentation-fastapi", "opentelemetry-instrumentation-httpx"]
+otel = ["opentelemetry-distro", "opentelemetry-exporter-otlp", "opentelemetry-exporter-prometheus", "opentelemetry-instrumentation-fastapi", "opentelemetry-instrumentation-httpx", "prometheus-fastapi-instrumentator"]
 # Poetry does not support recursive dependencies, so we need to add all the dependencies here.
 # I also support their decision. There is no PEP for recursive dependencies, but it has been supported in pip since version 21.2.
 # It is here for backward compatibility.
