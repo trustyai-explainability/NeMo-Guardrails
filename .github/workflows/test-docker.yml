@@ -10,7 +10,7 @@ on:
       - "v*"
   pull_request:
     paths:
-      - "Dockerfile"
+      - "Dockerfile.server"
       - "pyproject.toml"
       - "poetry.lock"
       - ".github/workflows/test-docker.yml"
@@ -42,7 +42,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: Dockerfile
+          file: Dockerfile.server
           load: true
           tags: ${{ env.TEST_TAG }}
 
