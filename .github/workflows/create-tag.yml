@@ -7,7 +7,9 @@ on:
 
 jobs:
   create-tag:
-    if: github.event.pull_request.merged == true && startsWith(github.event.pull_request.head.ref, 'chore/release-')
+    if: |
+      github.event.pull_request.merged == true &&
+      startsWith(github.event.pull_request.head.ref, 'chore/release-')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -16,15 +18,23 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
         with:
-          ref: develop
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
           fetch-depth: 0
 
-      - name: Extract version from pyproject.toml
+      - name: Verify commit author is not a bot
+        run: |
+          AUTHOR=$(git log -1 --format='%ae' ${{ github.event.pull_request.merge_commit_sha }})
+          echo "Merge commit author: ${AUTHOR}"
+          if echo "${AUTHOR}" | grep -qiE '(dependabot|bot@)'; then
+            echo "::error::Commit authored by a bot (${AUTHOR}), aborting tag creation."
+            exit 1
+          fi
+
+      - name: Derive tag from commit SHA
         id: version
         run: |
-          VERSION=$(grep '^version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
-          echo "version=${VERSION}" >> $GITHUB_OUTPUT
-          echo "tag=v${VERSION}" >> $GITHUB_OUTPUT
+          SHORT_SHA=$(git rev-parse --short ${{ github.event.pull_request.merge_commit_sha }})
+          echo "tag=sha-${SHORT_SHA}" >> $GITHUB_OUTPUT
 
       - name: Check if tag already exists
         id: check-tag
@@ -42,7 +52,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a ${{ steps.version.outputs.tag }} -m "Release ${{ steps.version.outputs.tag }}"
+          git tag -a ${{ steps.version.outputs.tag }} ${{ github.event.pull_request.merge_commit_sha }} -m "Release ${{ steps.version.outputs.tag }}"
           git push origin ${{ steps.version.outputs.tag }}
 
       - name: Tag already exists
