@@ -17,57 +17,87 @@ BUILD_REF ?= $(or $(shell git describe --abbrev=0 2>/dev/null),$(GIT_TAG)) # rel
 # The name of the kind cluster to use for the "kind-load" target.
 KIND_CLUSTER ?= kind
 
-.PHONY: all test tests test_watch test_coverage test_profile docs docs-strict docs-serve docs-update-cards docs-check-cards docs-watch-cards pre_commit help
+.PHONY: help
+.PHONY: test test-parallel test-serial test-benchmark test-watch test-coverage test-profile warm-fastembed-cache
+.PHONY: docs-fern docs-fern-strict docs-fern-live docs-fern-preview-watch docs-fern-generate-sdk docs-fern-fix-empty-links docs-check-links docs-check-redirects
+.PHONY: pre-commit
+.PHONY: image-build image-local-build image-local-push image-kind
 
-# Default target executed when no specific target is provided to make.
-all: help
+.DEFAULT_GOAL := help
 
-# Define a variable for the test file path.
-TEST_FILE ?= tests/
+TEST ?=
+ARGS ?=
+WORKERS ?= auto
+# pytest-xdist --dist strategy for $(PYTEST) -n $(WORKERS) --dist $(DIST) $(ARGS) $(TEST).
+# worksteal dynamically rebalances queued tests; override DIST when debugging or grouping matters.
+DIST ?= worksteal
+
+PYTEST ?= poetry run pytest
+# These targets assume a Unix-like shell for env -u; use bash, Git Bash, or WSL on Windows.
+UNIT_TEST_ENV ?= env -u OPENAI_API_KEY -u NVIDIA_API_KEY \
+	-u LIVE_TEST -u LIVE_TEST_MODE -u TEST_LIVE_MODE
+
+FASTEMBED_CACHE ?= .cache/fastembed
+FASTEMBED_MODEL ?= sentence-transformers/all-MiniLM-L6-v2
+FASTEMBED_ENV ?= env FASTEMBED_CACHE_PATH=$(FASTEMBED_CACHE)
+FERN_STAGING_INSTANCE ?= nvidia-nemo-guardrails-staging.docs.buildwithfern.com/nemo/guardrails
 
 test:
-	poetry run pytest $(TEST_FILE)
+	$(UNIT_TEST_ENV) $(PYTEST) -n $(WORKERS) --dist $(DIST) $(ARGS) $(TEST)
 
-tests:
-	poetry run pytest $(TEST_FILE)
+test-parallel: test
 
-test_watch:
-	poetry run ptw --snapshot-update --now . -- -vv $(TEST_FILE)
+test-serial:
+	$(PYTEST) $(ARGS) $(TEST)
 
-test_coverage:
-	poetry run pytest --cov=$(TEST_FILE) --cov-report=term-missing
+test-benchmark:
+	$(PYTEST) $(ARGS) benchmark/tests
 
-test_profile:
-	poetry run pytest -vv tests/ --profile-svg
+test-watch:
+	poetry run ptw --snapshot-update --now . -- -vv $(ARGS) $(TEST)
 
-docs:
-	poetry run sphinx-build -b html docs _build/docs
+test-coverage:
+	$(UNIT_TEST_ENV) $(PYTEST) -n $(WORKERS) --dist $(DIST) --cov=nemoguardrails --cov-report=xml:coverage.xml $(ARGS) $(TEST)
 
-docs-strict:
-	poetry run sphinx-build -b html -W --keep-going docs _build/docs
+test-profile:
+	$(PYTEST) -vv --profile-svg $(ARGS) $(TEST)
 
-docs-serve:
-	cd docs && poetry run sphinx-autobuild . _build/html --port 8000 --open-browser
+warm-fastembed-cache:
+	$(FASTEMBED_ENV) poetry run python -c 'from fastembed import TextEmbedding; model = TextEmbedding("$(FASTEMBED_MODEL)"); next(model.embed(["warmup"]))'
 
-docs-update-cards:
-	cd docs && poetry run python scripts/update_cards/update_cards.py
+docs-fern: docs-fern-strict
 
-docs-check-cards:
-	cd docs && poetry run python scripts/update_cards/update_cards.py --dry-run
+docs-fern-strict: docs-fern-generate-sdk
+	FERN_VERSION=$$(node -p "require('./fern/fern.config.json').version") && cd fern && npx --yes "fern-api@$${FERN_VERSION}" check
 
-docs-watch-cards:
-	cd docs && poetry run python scripts/update_cards/update_cards.py watch
+docs-fern-live: docs-fern-generate-sdk
+	FERN_VERSION=$$(node -p "require('./fern/fern.config.json').version") && cd fern && npx --yes "fern-api@$${FERN_VERSION}" docs dev
+
+docs-fern-publish-staging: docs-fern-generate-sdk
+	FERN_VERSION=$$(node -p "require('./fern/fern.config.json').version") && cd fern && npx --yes "fern-api@$${FERN_VERSION}" generate --docs --instance "$(FERN_STAGING_INSTANCE)"
+
+docs-fern-preview-watch: docs-fern-generate-sdk
+	node scripts/watch-fern-preview.mjs
+
+docs-fern-generate-sdk:
+	FERN_VERSION=$$(node -p "require('./fern/fern.config.json').version") && cd fern && npx --yes "fern-api@$${FERN_VERSION}" docs md generate --library guardrails-python-sdk
+	node scripts/normalize-fern-sdk-reference.mjs
+
+docs-fern-fix-empty-links:
+	node scripts/fix-empty-fern-links.mjs
+
+docs-check-links:
+	bash scripts/check-docs-links.sh --local-only
 
 docs-check-redirects:
 	cd docs && poetry run python scripts/validate_redirects.py
 
-pre_commit:
-	pre-commit install
-	pre-commit run --all-files
+pre-commit:
+	poetry run pre-commit install
+	poetry run pre-commit run --all-files
 
 # BUILD
-.PHONY: image-build
-image-build: # Build the image using Docker buildx.
+image-build:
 	$(IMAGE_BUILD_CMD) -t $(IMAGE_TAG) \
 		--file Dockerfile.server \
 		--platform=$(PLATFORMS) \
@@ -77,42 +107,55 @@ image-build: # Build the image using Docker buildx.
 		$(LOAD) \
 		$(IMAGE_BUILD_EXTRA_OPTS) ./
 
-# Build the container image for the server
-.PHONY: image-local-build
-image-local-build: # Build the image using Docker buildx
+image-local-build:
 	set -e; \
 	builder=$$($(DOCKER_BUILDX_CMD) create --use); \
 	trap '$(DOCKER_BUILDX_CMD) rm -f "$$builder"' EXIT; \
 	$(MAKE) image-build PUSH="$(PUSH)" LOAD="$(LOAD)"
 
-.PHONY: image-local-push
-image-local-push: # Push the image to the local Docker registry
-image-local-push: PUSH=--push # Build the image for local development and push it to $IMAGE_REPO.
+image-local-push: PUSH=--push
 image-local-push: image-local-build
 
-.PHONY: image-kind
 image-kind: LOAD=--load
-image-kind: image-build # Build the image and load it to kind cluster $KIND_CLUSTER ("kind" by default)
+image-kind: image-build
 	kind load docker-image $(IMAGE_TAG) --name $(KIND_CLUSTER)
 
-# HELP
-
 help:
-	@echo '----'
-	@echo 'test                         - run unit tests'
-	@echo 'tests                        - run unit tests'
-	@echo 'test TEST_FILE=<test_file>   - run all tests in given file'
-	@echo 'test_watch                   - run unit tests in watch mode'
-	@echo 'test_coverage                - run unit tests with coverage'
-	@echo 'docs                         - build docs, if you installed the docs dependencies'
-	@echo 'docs-strict                  - build docs with warnings as errors (used in CI)'
-	@echo 'docs-serve                   - serve docs locally with auto-rebuild on changes'
-	@echo 'docs-update-cards            - update grid cards in index files from linked pages'
-	@echo 'docs-check-cards             - check if grid cards are up to date (dry run)'
-	@echo 'docs-watch-cards             - watch for file changes and auto-update cards'
-	@echo 'docs-check-redirects         - validate that all redirect targets exist'
-	@echo 'pre_commit                   - run pre-commit hooks'
-	@echo 'image-build                  - build the image using Docker buildx'
-	@echo 'image-local-build            - build the image using Docker buildx for local development'
-	@echo 'image-local-push             - build the image and push it to the local Docker registry'
-	@echo 'image-kind                   - build the image and load it to kind cluster $KIND_CLUSTER ("kind" by default)'
+	@printf '%s\n' \
+		'' \
+		'Usage:' \
+		'  make test [TEST=path] [WORKERS=auto] [ARGS="-q --tb=short"]' \
+		'  make test-serial [TEST=path] [ARGS="-q"]' \
+		'  make test-benchmark [ARGS="-q"]' \
+		'  make test-parallel [TEST=path] [WORKERS=auto] [ARGS="-q --tb=short"]' \
+		'  make test-watch [TEST=path]' \
+		'' \
+		'Tests:' \
+		'  test                  Run pytest.ini testpaths with pytest-xdist' \
+		'  test-parallel         Alias for test' \
+		'  test-serial           Run pytest without xdist or env filtering' \
+		'  test-benchmark        Run benchmark tooling tests' \
+		'  test-watch            Run pytest in watch mode' \
+		'  test-coverage         Run pytest with coverage' \
+		'  test-profile          Run pytest with profiling' \
+		'  warm-fastembed-cache  Prime the repo-local FastEmbed cache' \
+		'' \
+		'Docs:' \
+		'  docs-fern             Check Fern docs using the pinned Fern CLI' \
+		'  docs-fern-strict      Check Fern docs using the pinned Fern CLI' \
+		'  docs-fern-live        Serve Fern docs locally' \
+		'  docs-fern-publish-staging Publish Fern docs to the staging instance' \
+		'  docs-fern-preview-watch Watch and publish Fern preview for the current branch' \
+		'  docs-fern-generate-sdk Regenerate Python SDK reference pages with Fern' \
+		'  docs-fern-fix-empty-links Replace empty Markdown links with titles from Fern navigation' \
+		'  docs-check-links     Validate Markdown and MDX links locally' \
+		'  docs-check-redirects  Validate docs redirects' \
+		'' \
+		'Build:' \
+		'  image-build           Build the container image using Docker buildx' \
+		'  image-local-build     Build the image for local development' \
+		'  image-local-push      Build and push to the local Docker registry' \
+		'  image-kind            Build and load to kind cluster $$KIND_CLUSTER' \
+		'' \
+		'Maintenance:' \
+		'  pre-commit            Install and run pre-commit hooks'

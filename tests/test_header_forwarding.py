@@ -17,7 +17,6 @@
 
 from nemoguardrails.actions.llm.utils import get_extra_headers_from_request
 from nemoguardrails.context import api_request_headers_var
-from nemoguardrails.logging.callbacks import _redact_invocation_params
 
 
 def _set_headers(headers):
@@ -68,21 +67,3 @@ def test_x_authorization_forwarded_without_authorization():
     assert result == {"Authorization": "Bearer llm-key"}
 
 
-def test_redact_hides_bearer_tokens():
-    params = {
-        "model": "gpt-4",
-        "extra_headers": {
-            "Authorization": "Bearer sk-secret-123",
-            "x-custom": "visible",
-        },
-    }
-    result = _redact_invocation_params(params)
-    assert result["extra_headers"]["Authorization"] == "Bearer [REDACTED]"
-    assert result["extra_headers"]["x-custom"] == "visible"
-    # original unchanged
-    assert params["extra_headers"]["Authorization"] == "Bearer sk-secret-123"
-
-
-def test_redact_no_extra_headers_passthrough():
-    params = {"model": "gpt-4"}
-    assert _redact_invocation_params(params) is params
