@@ -974,16 +974,80 @@ def _is_rail_blocked(
     return False
 
 
+def _extract_flow_docstring(source_code: str) -> Optional[str]:
+    """Extract the first triple-quoted docstring from Colang flow source code."""
+    idx = source_code.find('"""')
+    if idx == -1:
+        return None
+    end = source_code.find('"""', idx + 3)
+    if end == -1:
+        return None
+    docstring = source_code[idx + 3 : end].strip()
+    return docstring if docstring else None
+
+
+def _build_flow_docstrings(flows: List) -> dict[str, str]:
+    """Build a mapping of flow name -> docstring from the config's flow list."""
+    mapping: dict[str, str] = {}
+    for flow in flows:
+        if isinstance(flow, dict):
+            name = flow.get("id") or flow.get("name")
+            source = flow.get("source_code")
+        else:
+            name = getattr(flow, "id", None) or getattr(flow, "name", None)
+            source = getattr(flow, "source_code", None)
+        if name and source:
+            doc = _extract_flow_docstring(source)
+            if doc:
+                mapping[name] = doc
+    return mapping
+
+
+def _extract_action_reason(rail: ActivatedRail) -> Optional[str]:
+    """Extract a structured reason from action return values, if any."""
+    for action in rail.executed_actions:
+        rv = action.return_value
+        if rv is None or not isinstance(rv, dict):
+            continue
+        for key in ("reason", "message", "description", "policy_violations"):
+            val = rv.get(key)
+            if val:
+                return str(val) if not isinstance(val, list) else ", ".join(str(v) for v in val)
+    return None
+
+
+def _extract_rail_reason(
+    rail: ActivatedRail,
+    is_blocked: bool,
+    flow_docstrings: Optional[dict[str, str]] = None,
+) -> Optional[str]:
+    """Build a human-readable reason for a blocked rail. Returns None for successful rails."""
+    if not is_blocked:
+        return None
+
+    action_reason = _extract_action_reason(rail)
+    if action_reason:
+        return action_reason
+
+    rail_name = getattr(rail, "name", "unknown")
+    if flow_docstrings and rail_name in flow_docstrings:
+        return flow_docstrings[rail_name]
+
+    return f"Content blocked by the '{rail_name}' guardrail."
+
+
 def _update_rails_status(
     rails_status: dict[str, RailStatus],
     message_rails: dict[str, RailStatus],
     rail: ActivatedRail,
     is_blocked: bool,
+    flow_docstrings: Optional[dict[str, str]] = None,
 ):
     """Update both aggregated and per-message rails status."""
     status = "blocked" if is_blocked else "success"
     rail_name = getattr(rail, "name", "unknown")
-    rail_status = RailStatus(status=status)
+    reason = _extract_rail_reason(rail, is_blocked, flow_docstrings)
+    rail_status = RailStatus(status=status, reason=reason)
 
     if rail_name not in rails_status or status == "blocked":
         rails_status[rail_name] = rail_status
@@ -1006,6 +1070,7 @@ def _process_result_log(
     rails_status: dict[str, RailStatus],
     message_rails: dict[str, RailStatus],
     aggregated_log: GenerationLog,
+    flow_docstrings: Optional[dict[str, str]] = None,
 ):
     """Process result log and update rails status."""
     if not (hasattr(result, "log") and result.log):
@@ -1014,11 +1079,53 @@ def _process_result_log(
     if hasattr(result.log, "activated_rails") and result.log.activated_rails:
         for rail in result.log.activated_rails:
             is_blocked = _is_rail_blocked(rail, role, msg, result)
-            _update_rails_status(rails_status, message_rails, rail, is_blocked)
+            _update_rails_status(rails_status, message_rails, rail, is_blocked, flow_docstrings)
             aggregated_log.activated_rails.append(rail)
 
     if hasattr(result.log, "stats") and result.log.stats:
         _merge_stats(aggregated_log, result.log.stats)
+
+
+_ROLE_TO_DIRECTION = {"user": "input", "assistant": "output", "tool": "input"}
+
+_DEFAULT_DETECTION_REASON = "unsuitable content detected"
+
+
+def _collect_detections(
+    message_results: List[MessageCheckResult],
+) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    """Collect blocked rail detections grouped into input and output."""
+    input_detections: list[tuple[str, str]] = []
+    output_detections: list[tuple[str, str]] = []
+
+    for msg in message_results:
+        direction = _ROLE_TO_DIRECTION.get(msg.role, "input")
+        for rail_name, rs in msg.rails.items():
+            if rs.status == "blocked":
+                target = input_detections if direction == "input" else output_detections
+                target.append((rail_name, rs.reason or _DEFAULT_DETECTION_REASON))
+
+    return input_detections, output_detections
+
+
+def _format_detection_summary(
+    input_detections: list[tuple[str, str]],
+    output_detections: list[tuple[str, str]],
+) -> str:
+    """Format detection lists into the standard warning message."""
+    lines = ["Warning: Unsuitable input/output detected."]
+
+    if input_detections:
+        lines.append("Input detections:")
+        for i, (name, reason) in enumerate(input_detections):
+            lines.append(f"  {i}) The '{name}' rail was triggered: {reason}")
+
+    if output_detections:
+        lines.append("Output detections:")
+        for i, (name, reason) in enumerate(output_detections):
+            lines.append(f"  {i}) The '{name}' rail was triggered: {reason}")
+
+    return "\n".join(lines)
 
 
 def _build_final_response(
@@ -1034,12 +1141,23 @@ def _build_final_response(
         }
     }
 
+    overall_status = _calculate_check_status(rails_status)
+
     return GuardrailCheckResponse(
-        status=_calculate_check_status(rails_status),
+        status=overall_status,
         rails_status=rails_status,
         messages=message_results,
         guardrails_data=guardrails_data,
     )
+
+
+def _log_rails_status(overall_status: str, message_results: List[MessageCheckResult]):
+    """Log a summary of guardrail check results grouped by input/output."""
+    if overall_status != "blocked":
+        return
+
+    input_dets, output_dets = _collect_detections(message_results)
+    log.warning(_format_detection_summary(input_dets, output_dets))
 
 
 def _json_response(response: GuardrailCheckResponse) -> str:
@@ -1190,6 +1308,7 @@ async def guardrail_checks(body: GuardrailsChatCompletionRequest, request: Reque
 
             rails_status = {}
             message_results = []
+            flow_docstrings = _build_flow_docstrings(llm_rails.config.flows)
 
             # Use NeMo's GenerationLog for accumulation instead of manual tracking
             aggregated_log = GenerationLog(activated_rails=[], stats=GenerationStats())
@@ -1230,7 +1349,7 @@ async def guardrail_checks(body: GuardrailsChatCompletionRequest, request: Reque
 
                 # Process result and track activated rails
                 message_rails: dict[str, RailStatus] = {}
-                _process_result_log(result, role, msg, rails_status, message_rails, aggregated_log)
+                _process_result_log(result, role, msg, rails_status, message_rails, aggregated_log, flow_docstrings)
 
                 # Add message result
                 message_results.append(MessageCheckResult(index=msg_idx, role=role, rails=message_rails))
@@ -1247,6 +1366,7 @@ async def guardrail_checks(body: GuardrailsChatCompletionRequest, request: Reque
 
             # Build and yield final response
             final_result = _build_final_response(rails_status, message_results, aggregated_log)
+            _log_rails_status(final_result.status, final_result.messages)
             yield _json_response(final_result)
 
         except Exception as e:
