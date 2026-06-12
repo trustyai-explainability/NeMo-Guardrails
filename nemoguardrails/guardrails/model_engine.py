@@ -20,23 +20,26 @@ OpenAI-compatible /v1/chat/completions endpoint via aiohttp.
 Retries are handled by aiohttp-retry (ExponentialRetry).
 """
 
+import json
 import logging
 import os
 import time
-from typing import Any, Optional, cast
+from collections.abc import AsyncGenerator
+from typing import Any, NamedTuple, Optional, cast
 
 import aiohttp
-from aiohttp_retry import ExponentialRetry, RetryClient
+from aiohttp_retry import RetryClient
 
 from nemoguardrails.guardrails._http import (
     DEFAULT_MAX_ATTEMPTS,
     DEFAULT_TIMEOUT_CONNECT,
     DEFAULT_TIMEOUT_TOTAL,
-    RETRYABLE_STATUS_CODES,
     safe_read_body,
 )
+from nemoguardrails.guardrails.base_engine import BaseEngine
 from nemoguardrails.guardrails.guardrails_types import LLMMessages, get_request_id, truncate
 from nemoguardrails.rails.llm.config import Model
+from nemoguardrails.types import LLMResponse, LLMResponseChunk, UsageInfo
 
 log = logging.getLogger(__name__)
 
@@ -49,6 +52,105 @@ _ENGINE_BASE_URLS = {
 _CHAT_COMPLETIONS_ENDPOINT = "/v1/chat/completions"
 
 
+class _RequestParams(NamedTuple):
+    """Pre-built parameters for an HTTP request to the completions endpoint."""
+
+    client: RetryClient
+    url: str
+    headers: dict[str, str]
+    body: dict[str, Any]
+
+
+def _parse_usage(usage_dict: dict) -> UsageInfo:
+    """Build UsageInfo from an OpenAI-format usage dict.
+
+    Picks up reasoning_tokens from completion_tokens_details (OpenAI reasoning
+    models) and cached_tokens from prompt_tokens_details when present.
+    """
+    completion_details = usage_dict.get("completion_tokens_details") or {}
+    prompt_details = usage_dict.get("prompt_tokens_details") or {}
+    return UsageInfo(
+        input_tokens=usage_dict.get("prompt_tokens", 0),
+        output_tokens=usage_dict.get("completion_tokens", 0),
+        total_tokens=usage_dict.get("total_tokens", 0),
+        reasoning_tokens=completion_details.get("reasoning_tokens"),
+        cached_tokens=prompt_details.get("cached_tokens"),
+    )
+
+
+def _parse_chat_completion(response: dict) -> LLMResponse:
+    """Convert a /v1/chat/completions response dict into an LLMResponse.
+
+    Reasoning is read from ``message.reasoning_content`` when the provider
+    exposes it (NIM, DeepSeek-style). Tool calls are out of scope for this
+    PR series and are not currently surfaced.
+    """
+    try:
+        choice = response["choices"][0]
+        message = choice["message"]
+        content = message["content"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise ValueError(f"Unexpected /v1/chat/completions response shape: {exc}") from exc
+
+    if not isinstance(content, str):
+        if content is None and message.get("tool_calls"):
+            raise ValueError(
+                "Tool-call-only responses are not yet supported by IORails (message contains tool_calls but no content)"
+            )
+        raise ValueError(f"Expected string content, got {type(content).__name__}")
+
+    reasoning = message.get("reasoning_content") or None
+
+    usage = _parse_usage(response["usage"]) if response.get("usage") else None
+
+    return LLMResponse(
+        content=content,
+        reasoning=reasoning,
+        model=response.get("model"),
+        finish_reason=choice.get("finish_reason"),
+        request_id=response.get("id"),
+        usage=usage,
+    )
+
+
+def _parse_chat_completion_chunk(chunk: dict) -> Optional[LLMResponseChunk]:
+    """Build an LLMResponseChunk from an SSE chunk dict.
+
+    Returns None for chunks without one of: content delta, reasoning delta,
+    or a usage payload.
+    Role-only first events and finish-only events with empty deltas
+    map to None.
+
+    Last chunk from OpenAI-compatible providers has a ``usage`` field when
+    ``stream_options.include_usage=true``. This is passed through to capture
+    the token usage metadata.
+    """
+    choices = chunk.get("choices") or []
+    usage_dict = chunk.get("usage")
+
+    delta_content: Optional[str] = None
+    delta_reasoning: Optional[str] = None
+    finish_reason = None
+    if choices:
+        choice = choices[0]
+        delta = choice.get("delta") or {}
+        delta_content = delta.get("content")
+        delta_reasoning = delta.get("reasoning_content") or None
+        finish_reason = choice.get("finish_reason")
+
+    if not delta_content and not delta_reasoning and not usage_dict:
+        return None
+
+    return LLMResponseChunk(
+        delta_content=delta_content,
+        delta_reasoning=delta_reasoning,
+        model=chunk.get("model"),
+        finish_reason=finish_reason,
+        request_id=chunk.get("id"),
+        usage=_parse_usage(usage_dict) if usage_dict else None,
+    )
+
+
 class ModelEngineError(Exception):
     """Raised when a model engine call fails."""
 
@@ -58,7 +160,7 @@ class ModelEngineError(Exception):
         super().__init__(message)
 
 
-class ModelEngine:
+class ModelEngine(BaseEngine):
     """Wraps a single Model config and makes HTTP calls to its endpoint.
 
     Each ModelEngine owns its own RetryClient with per-model timeout,
@@ -66,62 +168,42 @@ class ModelEngine:
     """
 
     def __init__(self, model_config: Model) -> None:
+        """Resolve base URL, API key, and retry settings from the model config."""
         self.model_config = model_config
         self.model_name: str = model_config.model or ""
         self.base_url: str = self._resolve_base_url()
         self.api_key: Optional[str] = self._resolve_api_key(model_config.engine)
 
-        # Configurable from model parameters
         params = model_config.parameters or {}
-        self._timeout = aiohttp.ClientTimeout(
-            total=float(params.get("timeout", DEFAULT_TIMEOUT_TOTAL)),
-            connect=float(params.get("timeout_connect", DEFAULT_TIMEOUT_CONNECT)),
+        super().__init__(
+            timeout_total=float(params.get("timeout") or DEFAULT_TIMEOUT_TOTAL),
+            timeout_connect=float(params.get("timeout_connect") or DEFAULT_TIMEOUT_CONNECT),
+            max_attempts=int(params.get("max_attempts") or DEFAULT_MAX_ATTEMPTS),
         )
-        self._retry_options = ExponentialRetry(
-            attempts=int(params.get("max_attempts", DEFAULT_MAX_ATTEMPTS)),
-            statuses=set(RETRYABLE_STATUS_CODES),
-            exceptions={aiohttp.ClientConnectionError},
-        )
-        self._client: Optional[RetryClient] = None
-        self._running = False
-
-    async def start(self) -> None:
-        """Create this engine's RetryClient. Call this during service startup."""
-        if self._running:
-            return
-
-        self._client = RetryClient(
-            retry_options=self._retry_options,
-            client_session=aiohttp.ClientSession(timeout=self._timeout),
-        )
-        self._running = True
-
-    async def stop(self) -> None:
-        """Close this engine's RetryClient. Call this during service shutdown."""
-        if not self._running:
-            return
-
-        try:
-            if self._client:
-                await self._client.close()
-                self._client = None
-        finally:
-            self._running = False
 
     def _resolve_base_url(self) -> str:
-        """Resolve the base URL from model parameters or engine type."""
+        """Resolve the base URL from model parameters or engine type.
+
+        Strips an optional trailing "/v1" so users can follow the OpenAI / LLMRails
+        convention of including "/v1" in base_url without producing a doubled
+        "/v1/v1/chat/completions" path when _CHAT_COMPLETIONS_ENDPOINT is appended.
+        """
         params = self.model_config.parameters or {}
+        engine = self.model_config.engine
 
         if params.get("base_url"):
-            return params["base_url"]
+            base_url = params["base_url"]
+        elif engine in _ENGINE_BASE_URLS:
+            base_url = _ENGINE_BASE_URLS[engine]
+        else:
+            raise ValueError(
+                f"No base_url in parameters and cannot infer from engine '{engine}' for model '{self.model_name}'"
+            )
 
-        engine = self.model_config.engine
-        if engine in _ENGINE_BASE_URLS:
-            return _ENGINE_BASE_URLS[engine]
-
-        raise ValueError(
-            f"No base_url in parameters and cannot infer from engine '{engine}' for model '{self.model_name}'"
-        )
+        base_url = base_url.rstrip("/")
+        if base_url.endswith("/v1"):
+            base_url = base_url[:-3]
+        return base_url
 
     def _get_environment_variable(self, variable_name: str) -> str | None:
         """Return the value stored in environment variable `variable_name`."""
@@ -149,6 +231,53 @@ class ModelEngine:
         # If no key is available, assume it's a local model that doesn't need one
         return None
 
+    def _ensure_running(self) -> None:
+        """Raise if the engine has not been started."""
+        if not self._running:
+            raise ModelEngineError(
+                f"ModelEngine for '{self.model_name}' has not been started. Call start() first.",
+                model_name=self.model_name,
+            )
+
+    def _prepare_request(self, messages: LLMMessages, **kwargs: Any) -> _RequestParams:
+        """Build the client, URL, headers, and body common to every request."""
+        client = cast(RetryClient, self._client)
+        url = self.base_url + _CHAT_COMPLETIONS_ENDPOINT
+
+        headers: dict[str, str] = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+
+        body: dict[str, Any] = {"model": self.model_name, "messages": messages, **kwargs}
+        return _RequestParams(client=client, url=url, headers=headers, body=body)
+
+    async def _raise_for_status(self, response: aiohttp.ClientResponse, req_id: str, t0: float) -> None:
+        """Raise ``ModelEngineError`` if the HTTP status indicates an error."""
+        if response.status >= 400:
+            elapsed_ms = (time.monotonic() - t0) * 1000
+            error_body = await safe_read_body(response)
+            log.warning(
+                "[%s] HTTP %s from model '%s' time=%.1fms",
+                req_id,
+                response.status,
+                self.model_name,
+                elapsed_ms,
+            )
+            raise ModelEngineError(
+                f"HTTP {response.status} from model '{self.model_name}': {error_body}",
+                model_name=self.model_name,
+                status=response.status,
+            )
+
+    def _wrap_exception(self, exc: Exception, req_id: str, t0: float, label: str = "Request") -> ModelEngineError:
+        """Wrap an unexpected exception in a ``ModelEngineError``."""
+        elapsed_ms = (time.monotonic() - t0) * 1000
+        log.warning("[%s] %s to model '%s' failed time=%.1fms", req_id, label, self.model_name, elapsed_ms)
+        return ModelEngineError(
+            f"{label} to model '{self.model_name}' failed: {exc}",
+            model_name=self.model_name,
+        )
+
     async def call(
         self,
         messages: LLMMessages,
@@ -169,48 +298,19 @@ class ModelEngine:
         Raises:
             ModelEngineError: If the request fails after all retries.
         """
-
-        if not self._running:
-            raise ModelEngineError(
-                f"ModelEngine for '{self.model_name}' has not been started. Call start() first.",
-                model_name=self.model_name,
-            )
-
-        # Cast as RetryClient so type-checking knows it isn't None
-        client = cast(RetryClient, self._client)
-
-        url = self.base_url.rstrip("/") + _CHAT_COMPLETIONS_ENDPOINT
-
-        headers: dict[str, str] = {"Content-Type": "application/json"}
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
-
-        body: dict[str, Any] = {
-            "model": self.model_name,
-            "messages": messages,
-            **kwargs,
-        }
+        self._ensure_running()
+        req = self._prepare_request(messages, **kwargs)
 
         req_id = get_request_id()
-        log.info("[%s] HTTP POST %s model='%s'", req_id, url, self.model_name)
-        log.debug("[%s] HTTP request body: %s", req_id, truncate(body))
+        log.info("[%s] HTTP POST %s model='%s'", req_id, req.url, self.model_name)
+        log.debug("[%s] HTTP request body: %s", req_id, truncate(req.body))
 
         t0 = time.monotonic()
         try:
-            async with client.post(url, json=body, headers=headers) as response:
+            async with req.client.post(req.url, json=req.body, headers=req.headers) as response:
+                await self._raise_for_status(response, req_id, t0)
+
                 elapsed_ms = (time.monotonic() - t0) * 1000
-
-                if response.status >= 400:
-                    error_body = await safe_read_body(response)
-                    log.warning(
-                        "[%s] HTTP %s from model '%s' time=%.1fms", req_id, response.status, self.model_name, elapsed_ms
-                    )
-                    raise ModelEngineError(
-                        f"HTTP {response.status} from model '{self.model_name}': {error_body}",
-                        model_name=self.model_name,
-                        status=response.status,
-                    )
-
                 result = await response.json()
                 log.debug(
                     "[%s] HTTP response status=%s time=%.1fms body: %s",
@@ -224,18 +324,131 @@ class ModelEngine:
         except ModelEngineError:
             raise
         except Exception as exc:
-            elapsed_ms = (time.monotonic() - t0) * 1000
-            log.warning("[%s] Request to model '%s' failed time=%.1fms", req_id, self.model_name, elapsed_ms)
+            raise self._wrap_exception(exc, req_id, t0) from exc
+
+    async def stream_call(
+        self,
+        messages: LLMMessages,
+        **kwargs: Any,
+    ) -> AsyncGenerator[LLMResponseChunk, None]:
+        """Make a streaming POST request to the /v1/chat/completions endpoint.
+
+        Sends ``stream=True`` and yields one ``LLMResponseChunk`` per SSE
+        event that carries a content delta, reasoning delta, OR a
+        ``usage`` payload. Role-only, finish-only, and empty-choices
+        events without usage are skipped. Retries are handled by the
+        RetryClient (same as ``call()``).
+
+        Note: when the upstream payload includes
+        ``stream_options.include_usage=true`` (default for the
+        OpenAI-compatible client), the provider sends a final
+        usage-only chunk with empty ``choices`` after the last content
+        chunk. That terminal chunk is yielded as
+        ``LLMResponseChunk(usage=...)`` with both ``delta_content``
+        and ``delta_reasoning`` unset — callers that only care about
+        content should gate on ``chunk.delta_content`` rather than
+        assuming every yielded chunk carries one.
+
+        Args:
+            messages: List of message dicts in OpenAI format.
+            **kwargs: Additional parameters for the request body (temperature, max_tokens, etc.)
+
+        Yields:
+            ``LLMResponseChunk`` objects with ``delta_content``,
+            ``delta_reasoning``, and/or ``usage`` populated.
+
+        Raises:
+            ModelEngineError: If the request fails after all retries.
+        """
+        self._ensure_running()
+        req = self._prepare_request(messages, stream=True, **kwargs)
+
+        # For streaming, disable the total timeout (response body streams
+        # for the full generation duration) and use sock_read to detect stalls
+        # between individual SSE chunks.
+        stream_timeout = aiohttp.ClientTimeout(
+            total=None,
+            connect=self._timeout.connect,
+            sock_read=self._timeout.total,
+        )
+
+        req_id = get_request_id()
+        log.info("[%s] HTTP POST (stream) %s model='%s'", req_id, req.url, self.model_name)
+        log.debug("[%s] HTTP request body: %s", req_id, truncate(req.body))
+
+        t0 = time.monotonic()
+        try:
+            async with req.client.post(req.url, json=req.body, headers=req.headers, timeout=stream_timeout) as response:
+                await self._raise_for_status(response, req_id, t0)
+
+                # Use readline() instead of iterating response.content directly.
+                # response.content uses readany() which returns arbitrary byte
+                # chunks — multiple SSE events in one TCP segment would be merged
+                # into one unparseable blob.  readline() splits on \n correctly.
+                while True:
+                    raw_line = await response.content.readline()
+                    if not raw_line:
+                        break
+
+                    line = raw_line.decode("utf-8").strip()
+                    if not line:
+                        continue
+                    if not line.startswith("data: "):
+                        continue
+
+                    payload = line[len("data: ") :]
+                    if payload == "[DONE]":
+                        break
+
+                    try:
+                        raw_chunk = json.loads(payload)
+                    except json.JSONDecodeError:
+                        log.warning("[%s] Unparseable SSE chunk: %s", req_id, payload[:200])
+                        continue
+
+                    parsed_chunk = _parse_chat_completion_chunk(raw_chunk)
+                    if parsed_chunk is not None:
+                        yield parsed_chunk
+
+                elapsed_ms = (time.monotonic() - t0) * 1000
+                log.debug("[%s] Stream completed time=%.1fms", req_id, elapsed_ms)
+
+        except ModelEngineError:
+            raise
+        except Exception as exc:
+            raise self._wrap_exception(exc, req_id, t0, label="Stream request") from exc
+
+    async def chat_completion(self, messages: LLMMessages, **kwargs: Any) -> LLMResponse:
+        """Generate a chat completion and return a structured ``LLMResponse``.
+
+        Calls the /v1/chat/completions endpoint and parses the OpenAI-format
+        response into an ``LLMResponse`` carrying content, reasoning (when the
+        provider exposes ``reasoning_content``), usage, finish reason, and
+        request id.
+
+        Raises:
+            ModelEngineError: If the request fails or the response format is unexpected.
+        """
+        response = await self.call(messages, **kwargs)
+        try:
+            return _parse_chat_completion(response)
+        except ValueError as exc:
             raise ModelEngineError(
-                f"Request to model '{self.model_name}' failed: {exc}",
+                f"Unexpected response format from model '{self.model_name}': {exc}",
                 model_name=self.model_name,
             ) from exc
 
-    async def __aenter__(self):
-        """Context manager (used for testing rather than long-lived instance)"""
-        await self.start()
-        return self
+    async def stream_chat_completion(
+        self, messages: LLMMessages, **kwargs: Any
+    ) -> AsyncGenerator[LLMResponseChunk, None]:
+        """Stream a chat completion and yield ``LLMResponseChunk`` objects.
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        """Context manager (used for testing rather than long-lived instance)"""
-        await self.stop()
+        Thin pass-through over ``stream_call`` — see that method's
+        docstring for the contract, including the terminal usage-only
+        chunk emitted when ``stream_options.include_usage`` is on.
+
+        Raises:
+            ModelEngineError: If the request fails after all retries.
+        """
+        async for chunk in self.stream_call(messages, **kwargs):
+            yield chunk

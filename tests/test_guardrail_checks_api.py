@@ -33,15 +33,15 @@ import pytest
 from fastapi.testclient import TestClient
 
 from nemoguardrails.server import api
-from tests.utils import FakeLLM
+from tests.utils import FakeLLMModel
 
 client = TestClient(api.app)
 
-_fake_llm = FakeLLM(responses=["I don't know."])
+_fake_llm = FakeLLMModel(responses=["I don't know."])
 
 
 def _mock_init_llm_model(**kwargs):
-    """Return a FakeLLM instead of initializing a real provider."""
+    """Return a FakeLLMModel instead of initializing a real provider."""
     _fake_llm.i = 0
     return _fake_llm
 
