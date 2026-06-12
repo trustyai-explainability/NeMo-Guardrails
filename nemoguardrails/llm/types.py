@@ -44,3 +44,5 @@ class Task(Enum):
 
     SELF_CHECK_FACTS = "self_check_facts"
     SELF_CHECK_HALLUCINATION = "self_check_hallucination"
+    SELF_CHECK_TOOL_CALL = "self_check_tool_call"
+    SELF_CHECK_TOOL_RESPONSE = "self_check_tool_response"
