@@ -26,6 +26,10 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import httpx
 from openai.types.chat.chat_completion import Choice
 from openai.types.chat.chat_completion_message import ChatCompletionMessage
+from openai.types.chat.chat_completion_message_tool_call import (
+    ChatCompletionMessageToolCall,
+    Function,
+)
 
 from nemoguardrails.rails.llm.options import GenerationResponse
 from nemoguardrails.server.schemas.openai import (
@@ -247,6 +251,23 @@ def generation_response_to_chat_completion(
                 # If conversion fails, skip the log
                 log_dict = None
 
+    # Build the message, including tool_calls and reasoning_content if present
+    message_kwargs: Dict[str, Any] = {
+        "role": "assistant",
+        "content": bot_message.get("content", ""),
+    }
+
+    finish_reason = "stop"
+
+    if response.tool_calls:
+        message_kwargs["tool_calls"] = _convert_tool_calls_to_openai_format(response.tool_calls)
+        finish_reason = "tool_calls"
+
+    message = ChatCompletionMessage(**message_kwargs)
+
+    if response.reasoning_content:
+        message.reasoning_content = response.reasoning_content  # type: ignore[attr-defined]
+
     return GuardrailsChatCompletion(
         id=f"chatcmpl-{uuid.uuid4()}",
         object="chat.completion",
@@ -255,11 +276,8 @@ def generation_response_to_chat_completion(
         choices=[
             Choice(
                 index=0,
-                message=ChatCompletionMessage(
-                    role="assistant",
-                    content=bot_message.get("content", ""),
-                ),
-                finish_reason="stop",
+                message=message,
+                finish_reason=finish_reason,
                 logprobs=None,
             )
         ],
@@ -271,6 +289,35 @@ def generation_response_to_chat_completion(
             state=response.state,
         ),
     )
+
+
+def _convert_tool_calls_to_openai_format(tool_calls: list) -> list[ChatCompletionMessageToolCall]:
+    """Convert internal tool calls to OpenAI API format.
+
+    Handles both LangChain-style (name/args at top level) and
+    DefaultFramework-style (nested under function key).
+    """
+    result = []
+    for tc in tool_calls:
+        func = tc.get("function", {})
+        if func:
+            name = func.get("name", "")
+            args = func.get("arguments", {})
+        else:
+            name = tc.get("name", "")
+            args = tc.get("args", {})
+        arguments = json.dumps(args) if isinstance(args, dict) else str(args)
+        result.append(
+            ChatCompletionMessageToolCall(
+                id=tc.get("id", ""),
+                type="function",
+                function=Function(
+                    name=name,
+                    arguments=arguments,
+                ),
+            )
+        )
+    return result
 
 
 def create_error_chat_completion(

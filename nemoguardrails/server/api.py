@@ -596,6 +596,10 @@ async def chat_completion(body: GuardrailsChatCompletionRequest, request: Reques
             generation_options.llm_params["presence_penalty"] = body.presence_penalty
         if body.frequency_penalty is not None:
             generation_options.llm_params["frequency_penalty"] = body.frequency_penalty
+        if body.tools:
+            generation_options.llm_params["tools"] = body.tools
+        if body.tool_choice is not None:
+            generation_options.llm_params["tool_choice"] = body.tool_choice
 
         if body.stream:
             # Use stream_async for streaming with output rails support
@@ -633,6 +637,18 @@ async def chat_completion(body: GuardrailsChatCompletionRequest, request: Reques
                 )
             else:
                 # For dict responses, convert to basic chat completion
+                message_kwargs = {
+                    "role": "assistant",
+                    "content": bot_message.get("content", ""),
+                }
+                finish_reason = "stop"
+
+                if "tool_calls" in bot_message and bot_message["tool_calls"]:
+                    from nemoguardrails.server.schemas.utils import _convert_tool_calls_to_openai_format
+
+                    message_kwargs["tool_calls"] = _convert_tool_calls_to_openai_format(bot_message["tool_calls"])
+                    finish_reason = "tool_calls"
+
                 return GuardrailsChatCompletion(
                     id=f"chatcmpl-{uuid.uuid4()}",
                     object="chat.completion",
@@ -641,11 +657,8 @@ async def chat_completion(body: GuardrailsChatCompletionRequest, request: Reques
                     choices=[
                         Choice(
                             index=0,
-                            message=ChatCompletionMessage(
-                                role="assistant",
-                                content=bot_message.get("content", ""),
-                            ),
-                            finish_reason="stop",
+                            message=ChatCompletionMessage(**message_kwargs),
+                            finish_reason=finish_reason,
                             logprobs=None,
                         )
                     ],

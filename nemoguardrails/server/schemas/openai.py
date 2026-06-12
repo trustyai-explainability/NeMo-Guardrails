@@ -94,6 +94,14 @@ class OpenAIChatCompletionRequest(BaseModel):
         default=None,
         description="Log probabilities parameter.",
     )
+    tools: Optional[List[dict]] = Field(
+        default=None,
+        description="A list of tools the model may call.",
+    )
+    tool_choice: Optional[Union[str, dict]] = Field(
+        default=None,
+        description="Controls which tool is called by the model (e.g., 'auto', 'none', 'required', or a specific function).",
+    )
 
 
 class GuardrailsDataInput(BaseModel):

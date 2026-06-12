@@ -152,6 +152,44 @@ class TestGenerate:
         assert result.reasoning == "Let me think..."
 
     @pytest.mark.asyncio
+    async def test_reasoning_vllm_field(self):
+        mc = _mock_client()
+        message = {"content": "42", "role": "assistant", "reasoning": "vLLM thinking..."}
+        resp = HTTPResponse(
+            body={"id": "c", "model": "gpt-4o", "choices": [{"index": 0, "message": message, "finish_reason": "stop"}]},
+            headers={},
+            status_code=200,
+        )
+        mc.chat_completion = AsyncMock(return_value=resp)
+        m = _model(mc)
+
+        result = await m.generate_async("What?")
+
+        assert result.content == "42"
+        assert result.reasoning == "vLLM thinking..."
+
+    @pytest.mark.asyncio
+    async def test_reasoning_content_takes_priority_over_reasoning(self):
+        mc = _mock_client()
+        message = {
+            "content": "42",
+            "role": "assistant",
+            "reasoning_content": "standard field",
+            "reasoning": "vllm field",
+        }
+        resp = HTTPResponse(
+            body={"id": "c", "model": "gpt-4o", "choices": [{"index": 0, "message": message, "finish_reason": "stop"}]},
+            headers={},
+            status_code=200,
+        )
+        mc.chat_completion = AsyncMock(return_value=resp)
+        m = _model(mc)
+
+        result = await m.generate_async("What?")
+
+        assert result.reasoning == "standard field"
+
+    @pytest.mark.asyncio
     async def test_cached_tokens(self):
         mc = _mock_client()
         mc.chat_completion = AsyncMock(
@@ -425,6 +463,35 @@ class TestStream:
             results.append(chunk)
 
         assert results[-1].delta_tool_calls[0].function.arguments == {}
+
+    @pytest.mark.asyncio
+    async def test_streaming_reasoning_vllm_field(self):
+        mc = _mock_client()
+
+        async def mock_stream(*args, **kwargs):
+            for c in [
+                {
+                    "id": "c",
+                    "model": "gpt-4o",
+                    "choices": [{"index": 0, "delta": {"reasoning": "Step 1..."}, "finish_reason": None}],
+                },
+                {
+                    "id": "c",
+                    "model": "gpt-4o",
+                    "choices": [{"index": 0, "delta": {"content": "Answer"}, "finish_reason": "stop"}],
+                },
+            ]:
+                yield HTTPResponse(body=c)
+
+        mc.stream_chat_completion = mock_stream
+        m = _model(mc)
+
+        results = []
+        async for chunk in m.stream_async("test"):
+            results.append(chunk)
+
+        assert results[0].delta_reasoning == "Step 1..."
+        assert results[1].delta_content == "Answer"
 
 
 class TestParams:
