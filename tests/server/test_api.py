@@ -283,7 +283,7 @@ def test_request_body_messages_with_tool_calls():
 
 
 def test_chat_completion_passes_tools_to_llm_params():
-    """Test that tools and tool_choice from the request are forwarded to llm_params."""
+    """Test that tools and tool_choice from the request are forwarded to llm_params in passthrough mode."""
     from nemoguardrails.rails.llm.options import GenerationResponse
 
     captured_options = {}
@@ -295,6 +295,7 @@ def test_chat_completion_passes_tools_to_llm_params():
     mock_rails = AsyncMock()
     mock_rails.generate_async = mock_generate_async
     mock_rails.config.colang_version = "1.0"
+    mock_rails.config.passthrough = True
 
     tools = [{"type": "function", "function": {"name": "get_weather", "parameters": {}}}]
 
@@ -315,6 +316,74 @@ def test_chat_completion_passes_tools_to_llm_params():
     assert captured_options["options"].llm_params["tools"] == tools
     assert captured_options["options"].llm_params["tool_choice"] == "auto"
     assert captured_options["options"].llm_params["parallel_tool_calls"] is False
+
+
+def test_chat_completion_rejects_tools_for_non_passthrough_config():
+    """Test that tools/tool_choice/parallel_tool_calls are rejected unless passthrough is True."""
+    mock_rails = AsyncMock()
+    mock_rails.config.colang_version = "1.0"
+    mock_rails.config.passthrough = False
+
+    tools = [{"type": "function", "function": {"name": "get_weather", "parameters": {}}}]
+
+    with patch("nemoguardrails.server.api._get_rails", new=AsyncMock(return_value=mock_rails)):
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "gpt-4o",
+                "messages": [{"role": "user", "content": "Weather?"}],
+                "tools": tools,
+                "guardrails": {"config_id": "with_custom_llm"},
+            },
+        )
+
+    assert response.status_code == 422
+    assert "passthrough" in response.json()["detail"].lower()
+
+
+def test_chat_completion_rejects_tool_choice_without_passthrough():
+    """Test that tool_choice alone is rejected for non-passthrough configs."""
+    mock_rails = AsyncMock()
+    mock_rails.config.colang_version = "1.0"
+    mock_rails.config.passthrough = None
+
+    with patch("nemoguardrails.server.api._get_rails", new=AsyncMock(return_value=mock_rails)):
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "gpt-4o",
+                "messages": [{"role": "user", "content": "Weather?"}],
+                "tool_choice": "auto",
+                "guardrails": {"config_id": "with_custom_llm"},
+            },
+        )
+
+    assert response.status_code == 422
+    assert "passthrough" in response.json()["detail"].lower()
+
+
+def test_chat_completion_rejects_tools_with_streaming_even_in_passthrough():
+    """Test that tools + stream=True is rejected even when passthrough is True."""
+    mock_rails = AsyncMock()
+    mock_rails.config.colang_version = "1.0"
+    mock_rails.config.passthrough = True
+
+    tools = [{"type": "function", "function": {"name": "get_weather", "parameters": {}}}]
+
+    with patch("nemoguardrails.server.api._get_rails", new=AsyncMock(return_value=mock_rails)):
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "gpt-4o",
+                "messages": [{"role": "user", "content": "Weather?"}],
+                "tools": tools,
+                "stream": True,
+                "guardrails": {"config_id": "with_custom_llm"},
+            },
+        )
+
+    assert response.status_code == 422
+    assert "passthrough" in response.json()["detail"].lower()
 
 
 def test_chat_completion_returns_tool_calls():

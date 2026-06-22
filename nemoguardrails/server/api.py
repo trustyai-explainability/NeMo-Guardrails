@@ -533,6 +533,17 @@ async def chat_completion(body: GuardrailsChatCompletionRequest, request: Reques
             detail="thread_id message-history replay is not supported for Colang 2.0.",
         )
 
+    if (body.tools or body.tool_choice is not None or body.parallel_tool_calls is not None) and (
+        llm_rails.config.passthrough is not True or body.stream
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "The 'tools', 'tool_choice', and 'parallel_tool_calls' parameters are only "
+                "supported for non-streaming requests when the guardrails configuration has 'passthrough: true'."
+            ),
+        )
+
     try:
         messages = body.messages or []
         if body.guardrails.context:
