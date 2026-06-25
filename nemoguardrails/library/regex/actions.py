@@ -37,7 +37,7 @@ async def detect_regex_pattern(
     """Checks whether the provided text matches any forbidden regex pattern.
 
     Args:
-        source: The source for the text, i.e. "input", "output", "retrieval".
+        source: The source for the text, i.e. "input", "output", "retrieval", "tool_call", "tool_response".
         text: The text to check.
         config: The rails configuration object.
 
@@ -47,15 +47,17 @@ async def detect_regex_pattern(
             - text (str): The original text that was checked.
             - detections (List[str]): List of pattern strings that matched.
     """
-    if source not in ("input", "output", "retrieval"):
-        raise ValueError("source must be one of 'input', 'output', or 'retrieval'")
+    if source not in ("input", "output", "retrieval", "tool_call", "tool_response"):
+        raise ValueError("source must be one of 'input', 'output', 'retrieval', 'tool_call', or 'tool_response'")
 
     regex_config = config.rails.config.regex_detection
     if regex_config is None:
         log.warning("No regex_detection configuration found.")
         return RegexDetectionResult(is_match=False, text=text, detections=[])
 
-    options = getattr(regex_config, source, None)
+    # Map tool_call and tool_response to output options as they follow similar validation patterns
+    source_key = source if source in ("input", "output", "retrieval") else "output"
+    options = getattr(regex_config, source_key, None)
 
     if options is None:
         log.warning("No regex rails configuration found for source: %s", source)

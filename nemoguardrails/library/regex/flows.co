@@ -31,3 +31,28 @@ flow regex check retrieval
 
   if $result["is_match"]
     $relevant_chunks = ""
+
+
+# TOOL OUTPUT RAILS
+
+
+flow regex check tool call
+  """Check if the tool calls match any forbidden regex patterns."""
+  $tool_calls_text = str($tool_calls)
+  $result = await DetectRegexMatchAction(source="tool_call", text=$tool_calls_text)
+
+  if $result["is_match"]
+    bot refuse to respond
+    abort
+
+
+# TOOL INPUT RAILS
+
+
+flow regex check tool response
+  """Check if the tool response matches any forbidden regex patterns."""
+  $result = await DetectRegexMatchAction(source="tool_response", text=$tool_message)
+
+  if $result["is_match"]
+    bot refuse to respond
+    abort
