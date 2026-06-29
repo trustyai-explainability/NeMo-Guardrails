@@ -20,8 +20,6 @@ from typing import TYPE_CHECKING, Any, Dict, List, NoReturn, Optional, Union, ca
 from nemoguardrails.colang.v2_x.lang.colang_ast import Flow
 from nemoguardrails.colang.v2_x.runtime.flows import InternalEvent, InternalEvents
 from nemoguardrails.context import (
-    api_request_headers_var,
-    get_llm_needs_runtime_auth,
     llm_call_info_var,
     llm_response_metadata_var,
     llm_stats_var,
@@ -29,6 +27,7 @@ from nemoguardrails.context import (
     tool_calls_var,
 )
 from nemoguardrails.exceptions import LLMCallException
+from nemoguardrails.header_forwarding import get_extra_headers_for_llm
 from nemoguardrails.logging.explain import LLMCallInfo
 from nemoguardrails.logging.llm_tracker import track_llm_call
 from nemoguardrails.types import ChatMessage, LLMModel, LLMResponse, LLMResponseChunk, UsageInfo
@@ -37,44 +36,6 @@ if TYPE_CHECKING:
     from nemoguardrails.streaming import StreamingHandler
 
 logger = logging.getLogger(__name__)
-
-_INFRA_PREFIXES = ("x-forwarded", "x-real-", "x-request-id", "x-remote-")
-
-
-def get_extra_headers_from_request(forward_auth: bool = True) -> Optional[Dict[str, str]]:
-    """Forward X-* headers from the incoming request to the LLM call.
-
-    Excludes proxy/infra headers and the inbound Authorization header (which
-    typically carries K8s/proxy auth and must never be forwarded to the LLM).
-    When forward_auth is True, forwards X-Authorization as Authorization to
-    the LLM provider.
-    """
-    request_headers = api_request_headers_var.get()
-    if not request_headers:
-        return None
-
-    extra_headers = {}
-
-    for k, v in request_headers.items():
-        lower = k.lower()
-        if lower in ("authorization", "x-authorization"):
-            continue
-        if lower.startswith("x-") and not lower.startswith(_INFRA_PREFIXES):
-            extra_headers[k] = v
-
-    if forward_auth:
-        auth = request_headers.get("x-authorization")
-        if auth:
-            extra_headers["Authorization"] = auth
-
-    return extra_headers or None
-
-
-def get_extra_headers_for_llm(llm: Any) -> Dict[str, str]:
-    """Return extra_headers dict for an LLM based on its runtime auth needs."""
-    needs_runtime_auth = get_llm_needs_runtime_auth(llm)
-    extra_headers = get_extra_headers_from_request(forward_auth=needs_runtime_auth)
-    return extra_headers or {}
 
 
 def _ensure_chat_messages(prompt: Union[str, list]) -> Union[str, List[ChatMessage]]:

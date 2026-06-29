@@ -30,7 +30,7 @@ from fastapi import APIRouter, Request
 from starlette.responses import StreamingResponse
 
 from nemoguardrails import LLMRails, RailsConfig, utils
-from nemoguardrails.context import api_request_headers_var
+from nemoguardrails.header_forwarding import api_request_headers_var
 from nemoguardrails.rails.llm.config import Model
 from nemoguardrails.rails.llm.options import (
     ActivatedRail,
