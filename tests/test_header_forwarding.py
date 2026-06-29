@@ -15,8 +15,7 @@
 
 """Tests for header forwarding and log redaction."""
 
-from nemoguardrails.actions.llm.utils import get_extra_headers_from_request
-from nemoguardrails.context import api_request_headers_var
+from nemoguardrails.header_forwarding import api_request_headers_var, get_extra_headers_from_request
 
 
 def _set_headers(headers):
