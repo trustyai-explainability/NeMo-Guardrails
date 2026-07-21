@@ -100,7 +100,7 @@ async def detect_sensitive_data(
     """Checks whether the provided text contains any sensitive data.
 
     Args
-        source: The source for the text, i.e. "input", "output", "retrieval".
+        source: The source for the text, i.e. "input", "output", "retrieval", "tool_call", "tool_response".
         text: The text to check.
         config: The rails configuration object.
 
@@ -109,9 +109,12 @@ async def detect_sensitive_data(
     """
     # Based on the source of the data, we use the right options
     sdd_config = config.rails.config.sensitive_data_detection
-    if source not in ["input", "output", "retrieval"]:
-        raise ValueError("source must be one of 'input', 'output', or 'retrieval'")
-    options: SensitiveDataDetectionOptions = getattr(sdd_config, source)
+    if source not in ["input", "output", "retrieval", "tool_call", "tool_response"]:
+        raise ValueError("source must be one of 'input', 'output', 'retrieval', 'tool_call', or 'tool_response'")
+
+    # Map tool_call and tool_response to output options as they follow similar validation patterns
+    source_key = source if source in ["input", "output", "retrieval"] else "output"
+    options: SensitiveDataDetectionOptions = getattr(sdd_config, source_key)
     default_score_threshold = getattr(options, "score_threshold")
 
     # If we don't have any entities specified, we stop
@@ -138,7 +141,7 @@ async def mask_sensitive_data(source: str, text: str, config: RailsConfig):
     """Checks whether the provided text contains any sensitive data.
 
     Args
-        source: The source for the text, i.e. "input", "output", "retrieval".
+        source: The source for the text, i.e. "input", "output", "retrieval", "tool_call", "tool_response".
         text: The text to check.
         config: The rails configuration object.
 
@@ -147,8 +150,11 @@ async def mask_sensitive_data(source: str, text: str, config: RailsConfig):
     """
     # Based on the source of the data, we use the right options
     sdd_config = config.rails.config.sensitive_data_detection
-    assert source in ["input", "output", "retrieval"]
-    options: SensitiveDataDetectionOptions = getattr(sdd_config, source)
+    assert source in ["input", "output", "retrieval", "tool_call", "tool_response"]
+
+    # Map tool_call and tool_response to output options as they follow similar validation patterns
+    source_key = source if source in ["input", "output", "retrieval"] else "output"
+    options: SensitiveDataDetectionOptions = getattr(sdd_config, source_key)
 
     # If we don't have any entities specified, we stop
     if len(options.entities) == 0:

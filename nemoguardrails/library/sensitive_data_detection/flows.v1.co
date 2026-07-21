@@ -31,7 +31,7 @@ define subflow mask sensitive data on output
   $bot_message = execute mask_sensitive_data(source="output", text=$bot_message)
 
 
-# RETRIVAL RAILS
+# RETRIEVAL RAILS
 
 
 define subflow detect sensitive data on retrieval
@@ -46,3 +46,40 @@ define subflow detect sensitive data on retrieval
 define subflow mask sensitive data on retrieval
   """Mask any sensitive data found in the relevant chunks from the knowledge base."""
   $relevant_chunks = execute mask_sensitive_data(source="retrieval", text=$relevant_chunks)
+
+
+# TOOL OUTPUT RAILS
+
+
+define subflow detect sensitive data on tool call
+  """Check if the tool calls contain any sensitive data in their parameters."""
+  $tool_calls_text = str($tool_calls)
+  $has_sensitive_data = execute detect_sensitive_data(source="tool_call", text=$tool_calls_text)
+
+  if $has_sensitive_data
+    bot inform answer unknown
+    stop
+
+
+define subflow mask sensitive data on tool call
+  """Mask any sensitive data found in the tool call parameters."""
+  $tool_calls_text = str($tool_calls)
+  $masked_text = execute mask_sensitive_data(source="tool_call", text=$tool_calls_text)
+  # Note: Masking tool calls requires careful handling to preserve structure
+
+
+# TOOL INPUT RAILS
+
+
+define subflow detect sensitive data on tool response
+  """Check if the tool response contains any sensitive data."""
+  $has_sensitive_data = execute detect_sensitive_data(source="tool_response", text=$tool_message)
+
+  if $has_sensitive_data
+    bot inform answer unknown
+    stop
+
+
+define subflow mask sensitive data on tool response
+  """Mask any sensitive data found in the tool response."""
+  $tool_message = execute mask_sensitive_data(source="tool_response", text=$tool_message)

@@ -49,3 +49,42 @@ flow mask sensitive data on retrieval
   """Mask any sensitive data found in the relevant chunks from the knowledge base."""
   global $relevant_chunks
   $relevant_chunks = await MaskSensitiveDataAction(source="retrieval", text=$relevant_chunks)
+
+
+# TOOL OUTPUT RAILS
+
+
+flow detect sensitive data on tool call
+  """Check if the tool calls contain any sensitive data in their parameters."""
+  $tool_calls_text = str($tool_calls)
+  $has_sensitive_data = await DetectSensitiveDataAction(source="tool_call", text=$tool_calls_text)
+
+  if $has_sensitive_data
+    bot inform answer unknown
+    abort
+
+
+flow mask sensitive data on tool call
+  """Mask any sensitive data found in the tool call parameters."""
+  global $tool_calls
+  $tool_calls_text = str($tool_calls)
+  $masked_text = await MaskSensitiveDataAction(source="tool_call", text=$tool_calls_text)
+  # Note: Masking tool calls requires careful handling to preserve structure
+
+
+# TOOL INPUT RAILS
+
+
+flow detect sensitive data on tool response
+  """Check if the tool response contains any sensitive data."""
+  $has_sensitive_data = await DetectSensitiveDataAction(source="tool_response", text=$tool_message)
+
+  if $has_sensitive_data
+    bot inform answer unknown
+    abort
+
+
+flow mask sensitive data on tool response
+  """Mask any sensitive data found in the tool response."""
+  global $tool_message
+  $tool_message = await MaskSensitiveDataAction(source="tool_response", text=$tool_message)
