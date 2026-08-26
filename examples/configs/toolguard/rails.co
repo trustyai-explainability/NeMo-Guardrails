@@ -1,0 +1,13 @@
+define bot inform unsafe tool call
+    "Tool call not allowed."
+
+
+define subflow toolguard block tool output
+  $tg = execute toolguard_check(tool_calls=$tool_calls)
+
+  if not $tg.allowed
+      if $config.enable_rails_exceptions
+        create event OutputRailException(message=$tg.reason)
+      else
+        bot refuse to respond
+      stop
