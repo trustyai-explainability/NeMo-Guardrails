@@ -1,0 +1,17 @@
+define bot refuse to respond
+  "I'm sorry, I can't respond to that."
+
+define flow self check tool call
+  """Check if the tool calls from the bot should be allowed.
+
+  This tool output rail uses LLM-based self-check to determine if the bot's
+  tool calls are safe and appropriate before execution.
+  """
+  $allowed = execute self_check_tool_call
+
+  if not $allowed
+    if $config.enable_rails_exceptions
+      create event ToolOutputRailException(message="Tool call not allowed. The tool call was blocked by the 'self check tool call' flow.")
+    else
+      bot refuse to respond
+    stop
