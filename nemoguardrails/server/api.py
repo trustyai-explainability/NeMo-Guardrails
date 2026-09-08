@@ -460,7 +460,7 @@ async def _get_rails(config_ids: List[str], model_name: Optional[str] = None) ->
     if full_llm_rails_config is None:
         raise ValueError("No valid rails configuration found.")
 
-    if model_name:
+    if model_name and os.environ.get("ENFORCE_MODEL_NAME", "").lower() != "true":
         full_llm_rails_config = _inject_model(full_llm_rails_config, model_name)
 
     llm_rails = LLMRails(config=full_llm_rails_config, verbose=True)
