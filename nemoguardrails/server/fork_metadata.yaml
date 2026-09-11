@@ -1,0 +1,28 @@
+# Static fork-identity metadata for the capability manifest endpoint
+# (nemoguardrails/server/manifest.py). Content here is not derivable from
+# FastAPI route introspection at startup; anything that *is* derivable
+# (endpoint catalog, version) is generated in code instead of duplicated here.
+name: "NeMo-Guardrails (TrustyAI fork)"
+upstream_delta_summary: >
+  Adds the /v1/guardrail/checks endpoint (evaluates messages against
+  configured input/output rails without generating an LLM response), forwards
+  X-* request headers to configured LLM providers with auth-token redaction in
+  logs, and ships a UBI9-based Dockerfile.server with baked-in models. See the
+  fork's CLAUDE.md "Key fork changes" section for the authoritative list.
+documentation:
+  - url: "https://github.com/trustyai-explainability/NeMo-Guardrails/blob/develop/CLAUDE.md"
+    description: >
+      TrustyAI fork changes, fork-specific endpoints, and integration points.
+      Authoritative source for how this deployment diverges from upstream.
+  - url: "https://docs.nvidia.com/nemo/guardrails/_mcp/server"
+    description: >
+      Upstream NVIDIA NeMo Guardrails documentation MCP server. Covers
+      general/upstream behavior only -- it does not include this fork's
+      /v1/guardrail/checks endpoint, TrustyAI CRD integration, or header
+      forwarding behavior described in this manifest.
+integration:
+  crd: "trustyai.opendatahub.io/v1alpha1"
+  config_schema:
+    MAIN_MODEL_ENGINE: "LLM engine identifier for the primary model (e.g. openai)."
+    MAIN_MODEL_BASE_URL: "Base URL of the primary model's OpenAI-compatible endpoint."
+    Authorization: "Forwarded as a request header to the configured LLM provider; redacted in logs, never persisted."

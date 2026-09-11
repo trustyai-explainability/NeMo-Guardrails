@@ -59,6 +59,9 @@ from nemoguardrails.server.exception_handlers import (
     rail_type_not_configured_error_handler,
     validation_error_handler,
 )
+from nemoguardrails.server.manifest import build_manifest
+from nemoguardrails.server.manifest import router as manifest_router
+from nemoguardrails.server.schemas.manifest import CapabilityManifest
 from nemoguardrails.server.schemas.openai import (
     GuardrailCheckRequest,
     GuardrailCheckResponse,
@@ -103,6 +106,9 @@ class GuardrailsApp(FastAPI):
         self.single_config_id: Optional[str] = None
         self.loop: Optional[asyncio.AbstractEventLoop] = None
         self.task: Optional[asyncio.Future] = None
+        # Fork discoverability manifest; static sections generated once at startup,
+        # config catalog refreshed on each /admin/info request (see manifest.py).
+        self.manifest: Optional[CapabilityManifest] = None
 
 
 # The list of registered loggers. Can be used to send logs to various
@@ -191,6 +197,15 @@ async def lifespan(app: GuardrailsApp):
             # If there is an `init` function, we call it with the reference to the app.
             if config_module is not None and hasattr(config_module, "init"):
                 config_module.init(app)
+
+    # Generate the fork discoverability manifest from static metadata and live
+    # route introspection. Runs after single-config-mode detection above so the
+    # manifest's config catalog reflects final app state. Intentionally not
+    # wrapped in try/except: a broken or missing manifest should fail server
+    # startup outright rather than serve a stale/broken manifest or require the
+    # /v1/health liveness check (which has no dependency on server state today)
+    # to encode this failure.
+    app.manifest = build_manifest(app)
 
     if app.auto_reload:
         app.loop = asyncio.get_running_loop()
@@ -822,6 +837,9 @@ async def guardrail_check(body: GuardrailCheckRequest, request: Request):
 from nemoguardrails.server.checks import router as checks_router  # noqa: E402
 
 app.include_router(checks_router)
+
+# Include fork discoverability manifest router
+app.include_router(manifest_router)
 
 
 # By default, there are no challenges
