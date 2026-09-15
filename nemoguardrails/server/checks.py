@@ -42,6 +42,7 @@ from nemoguardrails.rails.llm.options import (
     GenerationStats,
 )
 from nemoguardrails.server.api import _get_rails, registered_loggers
+from nemoguardrails.server.manifest import FORK_MANIFEST_TAG
 from nemoguardrails.server.schemas.checks import (
     DetailedGuardrailCheckResponse,
     MessageCheckResult,
@@ -51,7 +52,7 @@ from nemoguardrails.server.schemas.openai import GuardrailsChatCompletionRequest
 
 log = logging.getLogger(__name__)
 
-router = APIRouter()
+router = APIRouter(tags=[FORK_MANIFEST_TAG])
 
 
 # =============================================================================
@@ -479,6 +480,7 @@ def _build_check_messages(role: str, content: str, msg: dict) -> List[dict]:
 @router.post(
     "/v1/guardrail/checks",
     response_model=DetailedGuardrailCheckResponse,
+    summary="Evaluates messages against configured input/output rails without generating an LLM response.",
 )
 async def guardrail_checks(body: GuardrailsChatCompletionRequest, request: Request):
     """Check messages against guardrails without generating LLM responses.
