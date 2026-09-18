@@ -85,7 +85,7 @@ otel = [
 models = [
   "torch (>=2.0.0)",
   "spacy (>=3.4.4,<4.0.0,!=3.7.0) ; python_version<'3.14'",
-  "nltk (>=3.8)",
+  "nltk (>=3.10.3)",
   "sentence-transformers (>=2.2.0)",
   "einops (>=0.6.0)",
 ]
@@ -119,7 +119,7 @@ all = [
   "chainlit (>=2.11.0,<3.0.0)",
   "torch (>=2.0.0)",
   "spacy (>=3.4.4,<4.0.0,!=3.7.0) ; python_version<'3.14'",
-  "nltk (>=3.8)",
+  "nltk (>=3.10.3)",
   "sentence-transformers (>=2.2.0)",
   "einops (>=0.6.0)",
   "transformers (>=4.35.0)",

@@ -68,6 +68,8 @@ cymem==2.0.11
     #   thinc
 dataclasses-json==0.6.7
     # via nemoguardrails (pyproject.toml)
+defusedxml==0.7.1
+    # via nltk
 distro==1.9.0
     # via openai
 einops==0.8.1
@@ -183,7 +185,7 @@ nest-asyncio==1.6.0
     # via nemoguardrails (pyproject.toml)
 networkx==3.5
     # via torch
-nltk==3.9.2
+nltk==3.10.3
     # via nemoguardrails (pyproject.toml)
 numpy==2.3.3
     # via
