@@ -13,9 +13,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Schemas for the fork discoverability manifest endpoint (fork-specific)."""
+"""Schemas for TrustyAI admin discoverability endpoints (fork-specific)."""
 
-from typing import Dict, List
+from typing import List
 
 from pydantic import BaseModel, Field
 
@@ -64,36 +64,13 @@ class ManifestRailModule(BaseModel):
     )
 
 
-class ManifestEnabledFlows(BaseModel):
-    """Rail flows enabled on a config, grouped by rail type."""
+class ManifestAction(BaseModel):
+    """An action registered with the live server (fork-level / server-wide catalog)."""
 
-    input: List[str] = Field(default_factory=list, description="Flows from rails.input.flows.")
-    output: List[str] = Field(default_factory=list, description="Flows from rails.output.flows.")
-    retrieval: List[str] = Field(default_factory=list, description="Flows from rails.retrieval.flows.")
-
-
-class ManifestConfigSummary(BaseModel):
-    """Structural summary of a mounted guardrails config.
-
-    Example::
-
-        {
-          "model_engines": ["openai"],
-          "enabled_flows": {
-            "input": ["self check input"],
-            "output": ["self check output"],
-            "retrieval": []
-          }
-        }
-    """
-
-    model_engines: List[str] = Field(
-        default_factory=list,
-        description="Distinct model engine names configured (e.g. 'openai', 'nim').",
-    )
-    enabled_flows: ManifestEnabledFlows = Field(
-        default_factory=ManifestEnabledFlows,
-        description="Rail flow names enabled on this config, grouped by input/output/retrieval.",
+    name: str = Field(description="Action name as registered on the ActionDispatcher.")
+    source: str = Field(
+        default="unknown",
+        description="Source classification: 'built-in', 'custom', or 'unknown'.",
     )
 
 
@@ -115,7 +92,11 @@ class TrustyAINemoCRDVersion(BaseModel):
 
 
 class CapabilityManifest(BaseModel):
-    """Top-level fork discoverability manifest document."""
+    """Fork / server capability document for GET /admin/info.
+
+    Covers identity, endpoints, documentation, rails, and actions. Does not
+    include per-config payloads.
+    """
 
     identity: ManifestIdentity
     endpoints: List[ManifestEndpoint] = Field(
@@ -128,7 +109,7 @@ class CapabilityManifest(BaseModel):
         default_factory=list,
         description="Built-in guardrail library modules present in this build and the flows they provide.",
     )
-    configs: Dict[str, ManifestConfigSummary] = Field(
-        default_factory=dict,
-        description="Guardrails configurations available on this server (same ids as /v1/rails/configs).",
+    actions: List[ManifestAction] = Field(
+        default_factory=list,
+        description="Actions available on this server (union across loaded configs' ActionDispatchers).",
     )
