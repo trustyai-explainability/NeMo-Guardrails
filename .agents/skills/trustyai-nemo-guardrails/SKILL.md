@@ -28,7 +28,7 @@ install step is required beyond having the repo cloned.
 
 The server defines the manifest path as `MANIFEST_PATH` in
 `nemoguardrails/server/manifest.py`. It is currently `/admin/info`, which is
-temporaty until the EvalHub team agrees on a platform-wide Agent
+temporary until the EvalHub team agrees on a platform-wide Agent
 Discoverability contract.
 
 1. **Local dev server**: fetch `http://<host>:<port>/admin/info` from the
@@ -52,9 +52,11 @@ Discoverability contract.
    - **Auth disabled**: `http://<cr-name>.<namespace>.svc/admin/info`. No
      proxy or token is involved.
 
-   Both are cluster-internal Service URLs. NeMoGuardrails has no
-   Route/HTTPRoute, so from a developer workstation the user must
-   [port-forward](#port-forwarding-from-a-workstation).
+   Both are cluster-internal Service URLs. NeMo Guardrails may expose a
+   Route for the main API, but it exposes no admin Route — any public Route
+   only fronts the main port. With auth enabled, the manifest lives only on
+   Service port 444, so from a developer workstation
+   [port-forward the admin Service port](#port-forwarding-from-a-workstation).
 
 ## Handling Failures
 
@@ -104,9 +106,10 @@ Give these commands to the user instead of running them yourself. Don't run
 `oc whoami -t` or print the token, so the credential stays out of the
 conversation.
 
-**Auth enabled.** On OpenShift, the admin port's certificate is signed by the
-service CA, which every namespace publishes in the `openshift-service-ca.crt`
-ConfigMap:
+**Auth enabled.** Port-forward the Service's admin port (444), not the main
+API port (443) and not the OpenShift Route. On OpenShift, that admin port's
+certificate is signed by the service CA, which every namespace publishes in
+the `openshift-service-ca.crt` ConfigMap:
 
 ```text
 oc port-forward svc/<cr-name> 4444:444 -n <namespace>
