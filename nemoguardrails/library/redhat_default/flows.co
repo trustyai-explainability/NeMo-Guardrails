@@ -1,0 +1,51 @@
+flow red hat default prompt injection check input
+  $response = await RedHatDefaultPromptInjectionCheckInputAction()
+
+  if $response.is_blocked
+    if $system.config.enable_rails_exceptions
+      send InputRailException(message="Input blocked by 'red hat default prompt injection check input'.")
+    else
+      bot refuse to respond
+    abort
+
+flow red hat default safety check input
+  $response = await RedHatDefaultSafetyCheckInputAction()
+
+  if $response.is_blocked
+    if $system.config.enable_rails_exceptions
+      send InputRailException(message="Input blocked by 'red hat default safety check input'.")
+    else
+      bot refuse to respond
+    abort
+
+flow red hat default prompt injection check output
+  $response = await RedHatDefaultPromptInjectionCheckOutputAction()
+
+  if $response.is_blocked
+    if $system.config.enable_rails_exceptions
+      send OutputRailException(message="Output blocked by 'red hat default prompt injection check output'.")
+    else
+      bot refuse to respond
+    abort
+
+flow red hat default safety check output
+  $response = await RedHatDefaultSafetyCheckOutputAction()
+
+  if $response.is_blocked
+    if $system.config.enable_rails_exceptions
+      send OutputRailException(message="Output blocked by 'red hat default safety check output'.")
+    else
+      bot refuse to respond
+    abort
+
+flow red hat default prompt injection check retrieval
+  $response = await RedHatDefaultPromptInjectionCheckRetrievalAction()
+
+  if $response.is_transform
+    $relevant_chunks = $response.transform_text["relevant_chunks"]
+
+flow red hat default safety check retrieval
+  $response = await RedHatDefaultSafetyCheckRetrievalAction()
+
+  if $response.is_transform
+    $relevant_chunks = $response.transform_text["relevant_chunks"]

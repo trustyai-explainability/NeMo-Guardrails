@@ -1,0 +1,54 @@
+define bot refuse to respond
+  "I'm sorry, I can't respond to that."
+
+define subflow red hat default prompt injection check input
+  $response = execute red_hat_default_prompt_injection_check_input()
+
+  if $response.is_blocked
+    if $config.enable_rails_exceptions
+      create event InputRailException(message="Input blocked by 'red hat default prompt injection check input'.")
+    else
+      bot refuse to respond
+    stop
+
+define subflow red hat default safety check input
+  $response = execute red_hat_default_safety_check_input()
+
+  if $response.is_blocked
+    if $config.enable_rails_exceptions
+      create event InputRailException(message="Input blocked by 'red hat default safety check input'.")
+    else
+      bot refuse to respond
+    stop
+
+define subflow red hat default prompt injection check output
+  $response = execute red_hat_default_prompt_injection_check_output()
+
+  if $response.is_blocked
+    if $config.enable_rails_exceptions
+      create event OutputRailException(message="Output blocked by 'red hat default prompt injection check output'.")
+    else
+      bot refuse to respond
+    stop
+
+define subflow red hat default safety check output
+  $response = execute red_hat_default_safety_check_output()
+
+  if $response.is_blocked
+    if $config.enable_rails_exceptions
+      create event OutputRailException(message="Output blocked by 'red hat default safety check output'.")
+    else
+      bot refuse to respond
+    stop
+
+define subflow red hat default prompt injection check retrieval
+  $response = execute red_hat_default_prompt_injection_check_retrieval()
+
+  if $response.is_transform
+    $relevant_chunks = $response.transform_text["relevant_chunks"]
+
+define subflow red hat default safety check retrieval
+  $response = execute red_hat_default_safety_check_retrieval()
+
+  if $response.is_transform
+    $relevant_chunks = $response.transform_text["relevant_chunks"]
