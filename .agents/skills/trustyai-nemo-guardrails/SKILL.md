@@ -150,12 +150,15 @@ curl http://localhost:8080/admin/info
    actions. Use `/admin/info/rails` or `/admin/info/actions` when only that
    slice is needed.
 2. For mounted config ids, call `GET /v1/rails/configs` (not `/admin/info`).
-3. To learn what the fields mean in the deployed version, fetch
-   `/openapi.json` from the same server and read `CapabilityManifest` /
-   `ManifestAction` under `components.schemas`. On auth-enabled deployments,
-   use the admin port and the same token. If the server's OpenAPI document is
-   unavailable, read `nemoguardrails/server/schemas/manifest.py` instead, and
-   tell the user the checkout may not match the deployment.
+   That call goes to the main `/v1` surface (Service port 443 when auth is
+   enabled), not the admin port.
+3. To learn what response fields mean, read
+   `nemoguardrails/server/schemas/manifest.py` in the checkout
+   (`CapabilityManifest`, `ManifestAction`, etc.) and tell the user the
+   checkout may not match the deployment. Do **not** fetch `/openapi.json`
+   via the admin port (444): kube-rbac-proxy-admin only allows `/admin/*`,
+   so OpenAPI is not reachable there. On a local `nemoguardrails server`
+   with no proxy, `/openapi.json` on that same process is fine if needed.
 4. Quote the response field values directly (exact endpoint paths and
    behavioral contract text) instead of paraphrasing from memory or static
    docs.
