@@ -15,7 +15,7 @@
 
 """Schemas for TrustyAI admin discoverability endpoints (fork-specific)."""
 
-from typing import List
+from typing import Any, Dict, List
 
 from pydantic import BaseModel, Field
 
@@ -71,6 +71,39 @@ class ManifestAction(BaseModel):
     source: str = Field(
         default="unknown",
         description="Source classification: 'built-in', 'custom', or 'unknown'.",
+    )
+
+
+class ManifestEnabledFlows(BaseModel):
+    """Rail flows enabled on a config, grouped by rail type."""
+
+    input: List[str] = Field(default_factory=list, description="Flows from rails.input.flows.")
+    output: List[str] = Field(default_factory=list, description="Flows from rails.output.flows.")
+    retrieval: List[str] = Field(default_factory=list, description="Flows from rails.retrieval.flows.")
+    actions: List[str] = Field(
+        default_factory=list,
+        description="Flows from rails.actions.instant_actions.",
+    )
+    tool_input: List[str] = Field(default_factory=list, description="Flows from rails.tool_input.flows.")
+    tool_output: List[str] = Field(default_factory=list, description="Flows from rails.tool_output.flows.")
+
+
+class AdminConfigDetail(BaseModel):
+    """Full admin view of one mounted guardrails config.
+
+    Returned by ``GET /admin/configs`` (as map values) and ``GET /admin/config/{id}``.
+    """
+
+    rails_config: Dict[str, Any] = Field(
+        description="JSON dump of the parsed RailsConfig object used by the live server.",
+    )
+    rails: ManifestEnabledFlows = Field(
+        default_factory=ManifestEnabledFlows,
+        description="Enabled rail flow names derived from the same RailsConfig.",
+    )
+    files: Dict[str, str] = Field(
+        default_factory=dict,
+        description="Raw text contents of files under the config directory (relative path -> content).",
     )
 
 
