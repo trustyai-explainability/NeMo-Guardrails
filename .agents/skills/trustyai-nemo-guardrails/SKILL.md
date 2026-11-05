@@ -41,10 +41,13 @@ That list is not part of `/admin/info`.
 
 ## Finding The Endpoints
 
-1. **Local dev server**: fetch `http://<host>:<port>/admin/info` (and the
-   sibling paths above) from the running `nemoguardrails server`. No proxy or
-   token is involved.
-2. **In-cluster deployment (TrustyAI operator)**: read the URL from the
+Prefer a path that can actually reach `/admin/*`. There is **no admin Route**;
+any public Route only fronts the main API.
+
+1. **Local `nemoguardrails server` (preferred for workstation agents).** Fetch
+   `http://<host>:<port>/admin/info` (and the sibling paths above). No proxy or
+   token is involved. Use this whenever the in-cluster admin port is unreachable.
+2. **In-cluster deployment (TrustyAI operator).** Read the URL from the
    `NemoGuardrails` CR's `trustyai.opendatahub.io/nemo-guardrails-manifest-url`:
 
    ```text
@@ -63,22 +66,31 @@ That list is not part of `/admin/info`.
    - **Auth disabled**: `http://<cr-name>.<namespace>.svc/admin/info`. No
      proxy or token is involved.
 
-   Both are cluster-internal Service URLs. NeMo Guardrails may expose a
-   Route for the main API, but it exposes no admin Route — any public Route
-   only fronts the main port. With auth enabled, admin discoverability lives
-   only on Service port 444, so from a developer workstation
-   [port-forward the admin Service port](#port-forwarding-from-a-workstation).
+   These are cluster-internal Service URLs. `*.svc` names do not resolve from a
+   workstation. Even inside the cluster, the operand `NetworkPolicy` (see
+   trustyai-service-operator PR
+   [1071](https://github.com/trustyai-explainability/trustyai-service-operator/pull/1071))
+   admits ingress only on the public listener (container 8000 / kube-rbac-proxy
+   8443) and **never** on the admin listener (8444 / Service port 444). Do not
+   assume peer pods or a workstation port-forward can reach `/admin/*`.
+3. **Workstation port-forward (best-effort only).** Some clusters still allow
+   `oc port-forward` to Service port 444 via the apiserver/kubelet path; others
+   hang or time out once the operand NetworkPolicy is present. Treat success as
+   optional. Recipe:
+   [Port-forwarding from a workstation](#port-forwarding-from-a-workstation).
+   If it fails, go back to (1) or fall back as below — do not keep retrying.
 
 ## Handling Failures
 
 A failed fetch is not a dead end. Tell the user which step failed, quote the
 error, and use the guidance below.
 
-- **Connection refused, DNS failure, or timeout.** `*.svc` names never
-  resolve from a workstation, so this usually means the user needs to
-  [port-forward](#port-forwarding-from-a-workstation), not that the server is
-  down. If port-forwarding also fails, ask the user to start
-  `nemoguardrails server` locally or confirm the in-cluster pod is running.
+- **Connection refused, DNS failure, timeout, or port-forward hang.** For
+  `*.svc` URLs from a workstation, DNS failure is expected. For timeouts or
+  hangs against Service port 444 (directly or via port-forward), assume the
+  admin listener is closed to ingress (operand NetworkPolicy) rather than that
+  the pod is down. Prefer a local `nemoguardrails server`, or confirm the pod
+  is running and fall back to `CLAUDE.md` as below.
 - **404.** On auth-enabled deployments, first confirm the request went to
   port 444: the port 443 proxy returns 404 for anything outside `/v1/*`. A
   404 on port 444 means the deployed image predates these admin endpoints.
@@ -90,8 +102,7 @@ error, and use the guidance below.
   `oc auth can-i create nemoguardrails.trustyai.opendatahub.io/<cr-name> -n <namespace>`.
   If the answer is `no`, they need a role that grants `create` on that CR,
   which is editor-level access; view-only users cannot read admin endpoints.
-  Retrying with the same token will not help, whether or not it goes through
-  a port-forward.
+  Retrying with the same token will not help.
 - **TLS error (unknown CA or hostname mismatch).** Never disable certificate
   verification. Inside a pod, pass
   `--cacert /var/run/secrets/kubernetes.io/serviceaccount/service-ca.crt`.
@@ -101,10 +112,12 @@ error, and use the guidance below.
 - **Annotation missing.** The operator is older than the annotation. Check
   the CR's `security.opendatahub.io/enable-auth` annotation and build the URL
   as described above.
-- **Port-forwarding not possible, or the user declines.** Fall back to the
-  "Key fork changes" section of `CLAUDE.md`, and say explicitly that this is
-  a best-effort answer that may be out of date. Never make up fork-specific
-  behavior.
+- **Admin endpoints unreachable (NetworkPolicy, no port-forward, or user
+  declines).** Fall back to the "Key fork changes" section of `CLAUDE.md`, and
+  say explicitly that this is a best-effort answer that may be out of date.
+  Never make up fork-specific behavior. Do not invent
+  `spec.networkPolicy.additionalIngress` peers to open the admin listener
+  unless a maintainer has documented that as supported.
 - **Actions list is empty.** Configs may have failed to load, or
   `rails_config_path` may be missing. Ask the user to search the server logs
   for `Skipping actions for config` or `Rails config path ... is missing`.
@@ -113,9 +126,10 @@ error, and use the guidance below.
 
 ### Port-Forwarding From A Workstation
 
-Give these commands to the user instead of running them yourself. Don't run
-`oc whoami -t` or print the token, so the credential stays out of the
-conversation.
+Best-effort only — see Finding The Endpoints. Give these commands to the user
+instead of running them yourself. Don't run `oc whoami -t` or print the token,
+so the credential stays out of the conversation. If the forward or curl hangs
+or times out, stop and use a local server or `CLAUDE.md`.
 
 **Auth enabled.** Port-forward the Service's admin port (444), not the main
 API port (443) and not the OpenShift Route. On OpenShift, that admin port's
