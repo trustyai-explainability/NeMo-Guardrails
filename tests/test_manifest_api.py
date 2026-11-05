@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests for TrustyAI admin discoverability endpoints (/admin/info*)."""
+"""Tests for TrustyAI admin discoverability endpoints (/admin/info*, /admin/config*)."""
 
 from urllib.parse import urlparse
 
@@ -26,6 +26,7 @@ from nemoguardrails import utils
 from nemoguardrails.server import api
 from nemoguardrails.server import manifest as manifest_module
 from nemoguardrails.server.manifest import (
+    ADMIN_CONFIGS_PATH,
     MANIFEST_ACTIONS_PATH,
     MANIFEST_PATH,
     MANIFEST_RAILS_PATH,
@@ -82,6 +83,7 @@ def test_manifest_excludes_upstream_and_actions_server_endpoints():
     assert "/v1/checks" not in paths
     assert "/v1/actions/list" not in paths
     assert "/v1/actions/run" not in paths
+    assert "/v1/runtime/rails" not in paths
 
 
 def test_manifest_documentation_pointers_distinguish_fork_from_upstream():
@@ -158,6 +160,68 @@ def test_manifest_actions_subpath_returns_actions(monkeypatch):
     assert all("name" in action for action in actions)
 
 
+def test_admin_configs_map_matches_rails_configs_ids(monkeypatch):
+    """GET /admin/configs covers the same ids as /v1/rails/configs."""
+    monkeypatch.setattr(api.app, "single_config_mode", False)
+    monkeypatch.setattr(api.app, "rails_config_path", utils.get_examples_data_path("bots"))
+    init_manifest(api.app)
+
+    admin = client.get(ADMIN_CONFIGS_PATH)
+    configs_response = client.get("/v1/rails/configs")
+
+    assert admin.status_code == 200
+    configs = admin.json()
+    assert set(configs.keys()) == {c["id"] for c in configs_response.json()}
+    detail = configs["abc"]
+    assert "rails_config" in detail
+    assert "files" in detail
+    assert "rails" in detail
+    assert "config.yml" in detail["files"] or any(name.endswith("config.yml") for name in detail["files"])
+    assert detail["rails"]["input"] == ["self check input"]
+    assert detail["rails"]["output"] == ["self check output"]
+
+
+def test_admin_config_by_id_returns_detail(monkeypatch):
+    """GET /admin/config/{id} returns RailsConfig dump + files for one config."""
+    monkeypatch.setattr(api.app, "single_config_mode", False)
+    monkeypatch.setattr(api.app, "rails_config_path", utils.get_examples_data_path("bots"))
+    init_manifest(api.app)
+
+    response = client.get("/admin/config/abc")
+
+    assert response.status_code == 200
+    detail = response.json()
+    assert isinstance(detail["rails_config"], dict)
+    assert "models" in detail["rails_config"]
+    assert detail["files"]
+    assert detail["rails"]["input"] == ["self check input"]
+
+
+def test_admin_config_unknown_id_returns_404(monkeypatch):
+    """Unknown config id returns 404."""
+    monkeypatch.setattr(api.app, "single_config_mode", False)
+    monkeypatch.setattr(api.app, "rails_config_path", utils.get_examples_data_path("bots"))
+    init_manifest(api.app)
+
+    response = client.get("/admin/config/does-not-exist")
+
+    assert response.status_code == 404
+
+
+def test_admin_configs_reflect_single_config_mode(monkeypatch):
+    """In single-config mode, /admin/configs returns the one configured id."""
+    single_config_path = utils.get_examples_data_path("bots/hello_world")
+    monkeypatch.setattr(api.app, "single_config_mode", True)
+    monkeypatch.setattr(api.app, "single_config_id", "hello_world")
+    monkeypatch.setattr(api.app, "rails_config_path", single_config_path)
+    init_manifest(api.app)
+
+    response = client.get(ADMIN_CONFIGS_PATH)
+
+    assert response.status_code == 200
+    assert set(response.json().keys()) == {"hello_world"}
+
+
 def test_build_manifest_tolerates_no_fork_endpoints(monkeypatch, caplog):
     """No tagged routes yields an empty endpoint catalog and a warning, not a startup failure."""
     monkeypatch.setattr(manifest_module, "_discover_fork_endpoints", lambda routes: [])
@@ -203,14 +267,19 @@ def test_manifest_is_wired_through_app_lifespan():
         assert response.json()["endpoints"]
 
 
-def test_admin_info_routes_are_under_admin_prefix():
-    """Admin info routes are mounted under /admin (admin-proxy surface)."""
+def test_admin_routes_are_under_admin_prefix():
+    """Admin discoverability routes are all under /admin (admin-proxy surface)."""
     admin_paths = {
         path
         for route in manifest_module._iter_routes(api.app.routes)
         if (path := getattr(route, "path", None)) and path.startswith("/admin")
     }
-    assert admin_paths == {MANIFEST_PATH, MANIFEST_RAILS_PATH, MANIFEST_ACTIONS_PATH}
+    assert MANIFEST_PATH in admin_paths
+    assert MANIFEST_RAILS_PATH in admin_paths
+    assert MANIFEST_ACTIONS_PATH in admin_paths
+    assert ADMIN_CONFIGS_PATH in admin_paths
+    assert "/admin/config/{config_id}" in admin_paths
+    assert not any(path.startswith("/v1/runtime") for path in admin_paths)
 
 
 def test_lifespan_tolerates_missing_rails_config_path(monkeypatch):
@@ -224,3 +293,4 @@ def test_lifespan_tolerates_missing_rails_config_path(monkeypatch):
         assert manifest.status_code == 200
         assert "configs" not in manifest.json()
         assert manifest.json()["actions"] == []
+        assert live_client.get(ADMIN_CONFIGS_PATH).json() == {}

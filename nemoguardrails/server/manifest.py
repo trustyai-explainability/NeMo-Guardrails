@@ -13,11 +13,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""TrustyAI admin discoverability endpoints under /admin/info*.
+"""TrustyAI admin discoverability endpoints under /admin/*.
 
-Fork capability (`/admin/info`, `/admin/info/rails`, `/admin/info/actions`) lives
-here so the operator admin kube-rbac-proxy (Service port 444) gates them.
-`api.py` only needs `include_router(router)`.
+Fork capability (`/admin/info`, `/admin/info/rails`, `/admin/info/actions`) and
+per-config inspection (`/admin/configs`, `/admin/config/{id}`) live here so the
+operator admin kube-rbac-proxy (Service port 444) gates them. `api.py` only
+needs `include_router(router)`.
 """
 
 from __future__ import annotations
@@ -26,16 +27,18 @@ import inspect
 import logging
 import os
 from contextlib import asynccontextmanager
-from typing import AsyncIterator, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional
 
 from fastapi import APIRouter, FastAPI, HTTPException, Request
 
-from nemoguardrails import __version__
+from nemoguardrails import RailsConfig, __version__
 from nemoguardrails.colang import parse_colang_file
 from nemoguardrails.server.schemas.manifest import (
+    AdminConfigDetail,
     CapabilityManifest,
     ManifestAction,
     ManifestDocumentationPointer,
+    ManifestEnabledFlows,
     ManifestEndpoint,
     ManifestIdentity,
     ManifestRailModule,
@@ -47,6 +50,8 @@ log = logging.getLogger(__name__)
 MANIFEST_PATH = "/admin/info"
 MANIFEST_RAILS_PATH = "/admin/info/rails"
 MANIFEST_ACTIONS_PATH = "/admin/info/actions"
+ADMIN_CONFIGS_PATH = "/admin/configs"
+ADMIN_CONFIG_PATH = "/admin/config/{config_id}"
 
 _MANIFEST_ATTR = "_fork_capability_manifest"
 
@@ -175,11 +180,7 @@ def _discover_library_rails() -> list[ManifestRailModule]:
 
 
 def _discover_config_ids(app) -> list[str]:
-    """List guardrails config IDs (same discovery as /v1/rails/configs).
-
-    Used only to union actions across mounted configs; per-config payloads are
-    not part of `/admin/info`.
-    """
+    """List guardrails config IDs (same discovery as /v1/rails/configs)."""
     from nemoguardrails.server.api import _has_config_file
 
     if app.single_config_mode:
@@ -188,7 +189,7 @@ def _discover_config_ids(app) -> list[str]:
     config_root = app.rails_config_path
     if not os.path.isdir(config_root):
         log.warning(
-            "Rails config path %r is missing or not a directory; admin actions catalog will be empty",
+            "Rails config path %r is missing or not a directory; admin config catalog will be empty",
             config_root,
         )
         return []
@@ -200,6 +201,50 @@ def _discover_config_ids(app) -> list[str]:
         and f[0] not in (".", "_")
         and _has_config_file(os.path.join(config_root, f))
     )
+
+
+def _config_path(app, config_id: str) -> str:
+    """Resolve a config id to its on-disk path (matches `_get_rails`)."""
+    if app.single_config_mode:
+        return app.rails_config_path
+    return os.path.join(app.rails_config_path, config_id)
+
+
+def _enabled_flows_from_config(config: RailsConfig) -> ManifestEnabledFlows:
+    """Derive enabled flow lists from the live RailsConfig object."""
+    return ManifestEnabledFlows(
+        input=sorted(config.rails.input.flows),
+        output=sorted(config.rails.output.flows),
+        retrieval=sorted(config.rails.retrieval.flows),
+        actions=sorted(config.rails.actions.instant_actions or []),
+        tool_input=sorted(config.rails.tool_input.flows),
+        tool_output=sorted(config.rails.tool_output.flows),
+    )
+
+
+def _read_config_files(full_path: str) -> Dict[str, str]:
+    """Read text files under a config directory as relative-path -> content."""
+    files: Dict[str, str] = {}
+    if not os.path.isdir(full_path):
+        return files
+
+    for root, dirs, filenames in os.walk(full_path):
+        dirs[:] = [d for d in sorted(dirs) if d not in {"__pycache__", ".git"}]
+        for name in sorted(filenames):
+            if name.endswith((".pyc", ".pyo")):
+                continue
+            path = os.path.join(root, name)
+            rel = os.path.relpath(path, full_path)
+            try:
+                with open(path, encoding="utf-8", errors="replace") as handle:
+                    files[rel] = handle.read()
+            except OSError as exc:
+                log.warning(
+                    "Skipping config file %s in admin dump: failed to read (%s)",
+                    path,
+                    type(exc).__name__,
+                )
+    return files
 
 
 def _actions_from_rails(rails) -> List[ManifestAction]:
@@ -242,6 +287,18 @@ async def _load_rails(app, config_id: str):
                 detail=f"No guardrail configuration with id '{config_id}' found",
             ) from exc
         raise HTTPException(status_code=400, detail=message) from exc
+
+
+async def _build_config_detail(app, config_id: str) -> AdminConfigDetail:
+    """Build admin config detail from the live server RailsConfig + on-disk files."""
+    rails = await _load_rails(app, config_id)
+    full_path = _config_path(app, config_id)
+    rails_config_dump: Dict[str, Any] = rails.config.model_dump(mode="json")
+    return AdminConfigDetail(
+        rails_config=rails_config_dump,
+        rails=_enabled_flows_from_config(rails.config),
+        files=_read_config_files(full_path),
+    )
 
 
 async def _discover_server_actions(app) -> List[ManifestAction]:
@@ -343,3 +400,37 @@ def get_manifest_rails(request: Request):
 async def get_manifest_actions(request: Request):
     """Return the union of actions across loaded configs' ActionDispatchers."""
     return await _discover_server_actions(request.app)
+
+
+@router.get(
+    ADMIN_CONFIGS_PATH,
+    response_model=Dict[str, AdminConfigDetail],
+    summary="Map of all mounted configs (parsed RailsConfig + files).",
+)
+async def get_admin_configs(request: Request):
+    """Return config_id -> AdminConfigDetail for every mounted config."""
+    details: Dict[str, AdminConfigDetail] = {}
+    for config_id in _discover_config_ids(request.app):
+        try:
+            details[config_id] = await _build_config_detail(request.app, config_id)
+        except HTTPException as exc:
+            if exc.status_code == 404:
+                log.warning("Skipping missing config %r in /admin/configs", config_id)
+                continue
+            raise
+    return details
+
+
+@router.get(
+    ADMIN_CONFIG_PATH,
+    response_model=AdminConfigDetail,
+    summary="Single mounted config (parsed RailsConfig + files).",
+)
+async def get_admin_config(config_id: str, request: Request):
+    """Return AdminConfigDetail for one config id."""
+    if request.app.single_config_mode and config_id != request.app.single_config_id:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No guardrail configuration with id '{config_id}' found",
+        )
+    return await _build_config_detail(request.app, config_id)
