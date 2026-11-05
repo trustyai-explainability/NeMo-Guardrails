@@ -287,6 +287,10 @@ async def get_rails_configs():
         # And we use the name of the root folder as the id of the config.
         return [{"id": app.single_config_id}]
 
+    # Missing mount (e.g. operator path not ready yet) should not 500.
+    if not os.path.isdir(app.rails_config_path):
+        return []
+
     # We extract all folder names as config names
     config_ids = [
         f
@@ -821,11 +825,11 @@ async def guardrail_check(body: GuardrailCheckRequest, request: Request):
 # Include fork-specific checks endpoint router
 from nemoguardrails.server.checks import LegacyChecksDeprecationMiddleware  # noqa: E402
 from nemoguardrails.server.checks import router as checks_router  # noqa: E402
-from nemoguardrails.server.runtime import router as runtime_router  # noqa: E402
+from nemoguardrails.server.manifest import router as manifest_router  # noqa: E402
 
 app.include_router(checks_router)
-app.include_router(runtime_router)
 app.add_middleware(LegacyChecksDeprecationMiddleware)
+app.include_router(manifest_router)
 
 
 # By default, there are no challenges

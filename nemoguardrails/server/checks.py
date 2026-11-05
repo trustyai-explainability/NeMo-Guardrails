@@ -46,6 +46,7 @@ from nemoguardrails.rails.llm.options import (
     GenerationStats,
 )
 from nemoguardrails.server.api import _get_rails, registered_loggers
+from nemoguardrails.server.manifest import FORK_MANIFEST_TAG
 from nemoguardrails.server.schemas.checks import (
     DetailedGuardrailCheckResponse,
     MessageCheckResult,
@@ -67,7 +68,7 @@ async def _checks_lifespan(app: FastAPI) -> AsyncIterator[None]:
     yield
 
 
-router = APIRouter(lifespan=_checks_lifespan)
+router = APIRouter(tags=[FORK_MANIFEST_TAG], lifespan=_checks_lifespan)
 
 
 class LegacyChecksDeprecationMiddleware:
@@ -523,6 +524,7 @@ def _build_check_messages(role: str, content: str, msg: dict) -> List[dict]:
     "/v1/guardrail/checks",
     response_model=DetailedGuardrailCheckResponse,
     deprecated=True,
+    summary="Evaluates messages against configured input/output rails without generating an LLM response.",
 )
 async def guardrail_checks(body: GuardrailsChatCompletionRequest, request: Request):
     """Check messages against guardrails without generating LLM responses.
