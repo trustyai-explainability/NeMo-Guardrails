@@ -36,143 +36,103 @@ Paths are defined in `nemoguardrails/server/manifest.py`. They live under
 | `GET /admin/info/rails` | Built-in library rail modules and Colang flow names for this build (same as `rails` on the parent). |
 | `GET /admin/info/actions` | Actions registered on this server (same as `actions` on the parent). |
 
-For **which config ids are mounted**, use upstream `GET /v1/rails/configs`.
-That list is not part of `/admin/info`.
+For **which config ids are mounted**, use upstream `GET /v1/rails/configs`
+on the main `/v1` surface (Service port 443 when auth is enabled). That list
+is not part of `/admin/info`.
+
+## Access Model (intended vs today)
+
+**Intended (external / workstation agents):** the TrustyAI operator exposes an
+**admin Route** (or equivalent) to Service port 444. Agents call that URL for
+`/admin/info*` with a bearer token that can `create`
+`nemoguardrails.trustyai.opendatahub.io/<cr-name>`. The main app Route stays
+on the public listener only and must not be used for `/admin/*`.
+
+**Today:** many deployments still have **no admin Route**. The public Route
+fronts only the main API. The operand `NetworkPolicy` (operator PR
+[1071](https://github.com/trustyai-explainability/trustyai-service-operator/pull/1071))
+admits ingress on the public listener only and **never** on the admin listener
+(8444 / Service port 444). Cluster-internal `*.svc:444` URLs therefore do not
+help a workstation agent, and `oc port-forward` to `:444` is unreliable.
+
+Until an admin Route exists, prefer a **local `nemoguardrails server`** for
+live JSON, or fall back to `CLAUDE.md` — do not treat in-cluster admin URLs as
+reachable from outside the cluster.
 
 ## Finding The Endpoints
 
-Prefer a path that can actually reach `/admin/*`. There is **no admin Route**;
-any public Route only fronts the main API.
-
-1. **Local `nemoguardrails server` (preferred for workstation agents).** Fetch
-   `http://<host>:<port>/admin/info` (and the sibling paths above). No proxy or
-   token is involved. Use this whenever the in-cluster admin port is unreachable.
-2. **In-cluster deployment (TrustyAI operator).** Read the URL from the
-   `NemoGuardrails` CR's `trustyai.opendatahub.io/nemo-guardrails-manifest-url`:
+1. **Admin Route URL (preferred when present).** Read the CR annotation and
+   use it only if it is a reachable external/admin hostname (not a bare
+   `*.svc` name from a workstation):
 
    ```text
    oc get nemoguardrails <cr-name> -n <namespace> \
      -o jsonpath='{.metadata.annotations.trustyai\.opendatahub\.io/nemo-guardrails-manifest-url}'
    ```
 
-   The URL depends on whether the CR sets
-   `security.opendatahub.io/enable-auth: "true"`:
+   If the value is still `https://…svc:444/…` (or similar cluster-DNS only),
+   the operator has not exposed admin yet — skip to (2). When auth is enabled,
+   send `Authorization: Bearer <token>` with `create` on that CR. Never disable
+   TLS verification.
 
-   - **Auth enabled**: `https://<cr-name>.<namespace>.svc:444/admin/info`.
-     Port 444 is the admin port, behind kube-rbac-proxy-admin. The caller
-     needs a bearer token allowed to `create`
-     `nemoguardrails.trustyai.opendatahub.io/<cr-name>` in that namespace.
-     Port 443 serves only `/v1/*` and cannot reach `/admin/*`.
-   - **Auth disabled**: `http://<cr-name>.<namespace>.svc/admin/info`. No
-     proxy or token is involved.
+2. **Local `nemoguardrails server`.** Fetch
+   `http://<host>:<port>/admin/info` (and `/admin/info/rails`,
+   `/admin/info/actions`). No proxy or token. Use this for workstation agents
+   when no admin Route is available.
 
-   These are cluster-internal Service URLs. `*.svc` names do not resolve from a
-   workstation. Even inside the cluster, the operand `NetworkPolicy` (see
-   trustyai-service-operator PR
-   [1071](https://github.com/trustyai-explainability/trustyai-service-operator/pull/1071))
-   admits ingress only on the public listener (container 8000 / kube-rbac-proxy
-   8443) and **never** on the admin listener (8444 / Service port 444). Do not
-   assume peer pods or a workstation port-forward can reach `/admin/*`.
-3. **Workstation port-forward (best-effort only).** Some clusters still allow
-   `oc port-forward` to Service port 444 via the apiserver/kubelet path; others
-   hang or time out once the operand NetworkPolicy is present. Treat success as
-   optional. Recipe:
-   [Port-forwarding from a workstation](#port-forwarding-from-a-workstation).
-   If it fails, go back to (1) or fall back as below — do not keep retrying.
+3. **Do not rely on port-forward to Service port 444** as the primary path.
+   It may work on some clusters and hang on others once NetworkPolicy is
+   present. If the user already has a working forward, you may use it; if it
+   fails once, stop and use (2) or the fallback below.
 
 ## Handling Failures
 
 A failed fetch is not a dead end. Tell the user which step failed, quote the
 error, and use the guidance below.
 
-- **Connection refused, DNS failure, timeout, or port-forward hang.** For
-  `*.svc` URLs from a workstation, DNS failure is expected. For timeouts or
-  hangs against Service port 444 (directly or via port-forward), assume the
-  admin listener is closed to ingress (operand NetworkPolicy) rather than that
-  the pod is down. Prefer a local `nemoguardrails server`, or confirm the pod
-  is running and fall back to `CLAUDE.md` as below.
-- **404.** On auth-enabled deployments, first confirm the request went to
-  port 444: the port 443 proxy returns 404 for anything outside `/v1/*`. A
-  404 on port 444 means the deployed image predates these admin endpoints.
-  Don't use the local checkout's path constants to second-guess this; the
-  deployment may be on a different version.
-- **401.** The token is missing, malformed, or expired. Ask the user to run
-  `oc login` and try again.
-- **403.** The token is valid but not authorized. Ask the user to run
+- **No admin Route / only `*.svc:444` from a workstation.** Expected until the
+  operator exposes admin. Use a local server or `CLAUDE.md`.
+- **Connection refused, DNS failure, timeout, or port-forward hang against
+  `:444`.** Assume admin is not ingress-reachable (no Route / NetworkPolicy),
+  not that the pod is necessarily down. Prefer local server or `CLAUDE.md`.
+- **404 on an admin URL.** Image may predate these endpoints, or the request
+  hit the main port (443), which returns 404 outside `/v1/*`. Don't second-guess
+  with the checkout's path constants; the deployment may be on a different
+  version.
+- **401.** Token missing, malformed, or expired — ask the user to `oc login`
+  and retry.
+- **403.** Token valid but not authorized — ask
   `oc auth can-i create nemoguardrails.trustyai.opendatahub.io/<cr-name> -n <namespace>`.
-  If the answer is `no`, they need a role that grants `create` on that CR,
-  which is editor-level access; view-only users cannot read admin endpoints.
-  Retrying with the same token will not help.
-- **TLS error (unknown CA or hostname mismatch).** Never disable certificate
-  verification. Inside a pod, pass
-  `--cacert /var/run/secrets/kubernetes.io/serviceaccount/service-ca.crt`.
-  Over a port-forward, the certificate names `<cr-name>.<namespace>.svc`,
-  not `localhost`, so use the recipe below. Report any other TLS error
+  View-only users cannot read admin endpoints. Retrying the same token will not
+  help.
+- **TLS error.** Never disable certificate verification. Report the error
   verbatim.
-- **Annotation missing.** The operator is older than the annotation. Check
-  the CR's `security.opendatahub.io/enable-auth` annotation and build the URL
-  as described above.
-- **Admin endpoints unreachable (NetworkPolicy, no port-forward, or user
-  declines).** Fall back to the "Key fork changes" section of `CLAUDE.md`, and
-  say explicitly that this is a best-effort answer that may be out of date.
-  Never make up fork-specific behavior. Do not invent
+- **Annotation missing.** Older operator — check
+  `security.opendatahub.io/enable-auth` and whether an admin Route exists at
+  all.
+- **Admin still unreachable.** Fall back to the "Key fork changes" section of
+  `CLAUDE.md`, and say this is best-effort and may be out of date. Never invent
+  fork-specific behavior. Do not invent
   `spec.networkPolicy.additionalIngress` peers to open the admin listener
   unless a maintainer has documented that as supported.
 - **Actions list is empty.** Configs may have failed to load, or
-  `rails_config_path` may be missing. Ask the user to search the server logs
-  for `Skipping actions for config` or `Rails config path ... is missing`.
-  Rails and endpoint sections of `/admin/info` may still be usable. For
-  mounted config ids, use `GET /v1/rails/configs`.
-
-### Port-Forwarding From A Workstation
-
-Best-effort only — see Finding The Endpoints. Give these commands to the user
-instead of running them yourself. Don't run `oc whoami -t` or print the token,
-so the credential stays out of the conversation. If the forward or curl hangs
-or times out, stop and use a local server or `CLAUDE.md`.
-
-**Auth enabled.** Port-forward the Service's admin port (444), not the main
-API port (443) and not the OpenShift Route. On OpenShift, that admin port's
-certificate is signed by the service CA, which every namespace publishes in
-the `openshift-service-ca.crt` ConfigMap:
-
-```text
-oc port-forward svc/<cr-name> 4444:444 -n <namespace>
-
-# in a second terminal
-oc get configmap openshift-service-ca.crt -n <namespace> \
-  -o jsonpath='{.data.service-ca\.crt}' > /tmp/service-ca.crt
-curl --cacert /tmp/service-ca.crt \
-  --resolve <cr-name>.<namespace>.svc:4444:127.0.0.1 \
-  -H "Authorization: Bearer $(oc whoami -t)" \
-  https://<cr-name>.<namespace>.svc:4444/admin/info
-```
-
-Substitute `/admin/info/rails` or `/admin/info/actions` on the same host/port
-when only that slice is needed.
-
-**Auth disabled:**
-
-```text
-oc port-forward svc/<cr-name> 8080:80 -n <namespace>
-curl http://localhost:8080/admin/info
-```
+  `rails_config_path` may be missing. Search logs for
+  `Skipping actions for config` or `Rails config path ... is missing`. Rails
+  and endpoint sections of `/admin/info` may still be usable.
 
 ## Using The Content
 
 1. Start with `GET /admin/info` for fork identity, endpoints, docs, rails, and
    actions. Use `/admin/info/rails` or `/admin/info/actions` when only that
    slice is needed.
-2. For mounted config ids, call `GET /v1/rails/configs` (not `/admin/info`).
-   That call goes to the main `/v1` surface (Service port 443 when auth is
-   enabled), not the admin port.
+2. For mounted config ids, call `GET /v1/rails/configs` on the main `/v1`
+   surface, not `/admin/info`.
 3. To learn what response fields mean, read
    `nemoguardrails/server/schemas/manifest.py` in the checkout
    (`CapabilityManifest`, `ManifestAction`, etc.) and tell the user the
-   checkout may not match the deployment. Do **not** fetch `/openapi.json`
-   via the admin port (444): kube-rbac-proxy-admin only allows `/admin/*`,
-   so OpenAPI is not reachable there. On a local `nemoguardrails server`
-   with no proxy, `/openapi.json` on that same process is fine if needed.
+   checkout may not match the deployment. Do **not** expect `/openapi.json` on
+   the admin port: kube-rbac-proxy-admin only allows `/admin/*`. On a local
+   unproxied server, `/openapi.json` on that process is fine if needed.
 4. Quote the response field values directly (exact endpoint paths and
    behavioral contract text) instead of paraphrasing from memory or static
    docs.
