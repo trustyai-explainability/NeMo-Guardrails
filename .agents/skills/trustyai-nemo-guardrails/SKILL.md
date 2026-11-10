@@ -49,11 +49,10 @@ is not part of `/admin/info`.
 on the public listener only and must not be used for `/admin/*`.
 
 **Today:** many deployments still have **no admin Route**. The public Route
-fronts only the main API. The operand `NetworkPolicy` (operator PR
-[1071](https://github.com/trustyai-explainability/trustyai-service-operator/pull/1071))
-admits ingress on the public listener only and **never** on the admin listener
-(8444 / Service port 444). Cluster-internal `*.svc:444` URLs therefore do not
-help a workstation agent, and `oc port-forward` to `:444` is unreliable.
+fronts only the main API. The operand `NetworkPolicy` admits ingress on the
+public listener only and **never** on the admin listener (8444 / Service port
+444). Cluster-internal `*.svc:444` URLs therefore do not help a workstation
+agent, and `oc port-forward` to `:444` is unreliable.
 
 Until an admin Route exists, prefer a **local `nemoguardrails server`** for
 live JSON, or fall back to `CLAUDE.md` — do not treat in-cluster admin URLs as
