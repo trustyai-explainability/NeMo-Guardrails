@@ -1,0 +1,15 @@
+
+flow self check tool call
+  """Check if the tool calls from the bot should be allowed.
+
+  This tool output rail uses LLM-based self-check to determine if the bot's
+  tool calls are safe and appropriate before execution.
+  """
+  $allowed = await SelfCheckToolCallAction
+
+  if not $allowed
+    if $system.config.enable_rails_exceptions
+      send ToolOutputRailException(message="Tool call not allowed. The tool call was blocked by the 'self check tool call' flow.")
+    else
+      bot refuse to respond
+      abort
