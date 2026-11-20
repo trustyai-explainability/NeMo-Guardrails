@@ -31,7 +31,7 @@ from typing import AsyncIterator, Dict, List, Optional
 from fastapi import APIRouter, FastAPI, HTTPException, Request
 
 from nemoguardrails import __version__
-from nemoguardrails.colang import parse_colang_file
+from nemoguardrails.rails.llm.library_loader import iter_parsed_library_colang
 from nemoguardrails.server.schemas.manifest import (
     CapabilityManifest,
     ManifestAction,
@@ -67,6 +67,14 @@ _FORK_DOCUMENTATION = [
         ),
     ),
     ManifestDocumentationPointer(
+        url="https://github.com/trustyai-explainability/NeMo-Guardrails/tree/develop/docs",
+        description=(
+            "TrustyAI fork product documentation (getting started, configuration, "
+            "deployment, evaluation). May lag behind this manifest for "
+            "admin discoverability endpoints."
+        ),
+    ),
+    ManifestDocumentationPointer(
         url="https://docs.nvidia.com/nemo/guardrails/_mcp/server",
         description=(
             "Upstream NVIDIA NeMo Guardrails documentation MCP server. Covers "
@@ -91,7 +99,6 @@ _FORK_INTEGRATION = TrustyAINemoCRDVersion(
 )
 
 _RAIL_FLOWS_COLANG_VERSION = "1.0"
-_LIBRARY_PATH = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "library"))
 
 
 def _iter_routes(routes):
@@ -141,65 +148,38 @@ def _discover_fork_endpoints(routes) -> list[ManifestEndpoint]:
     return endpoints
 
 
-def _discover_library_rails() -> list[ManifestRailModule]:
-    """Discover built-in guardrail modules and Colang flows in this build."""
+def _discover_library_rails(library_path: Optional[str] = None) -> list[ManifestRailModule]:
+    """Discover built-in guardrail modules via the shared ``LLMRails`` library loader."""
     modules: dict = {}
 
-    for root, dirs, files in os.walk(_LIBRARY_PATH):
-        dirs.sort()
-        relative_root = os.path.relpath(root, _LIBRARY_PATH)
-        if relative_root == os.curdir:
+    for module_name, _filename, _full_path, content in iter_parsed_library_colang(
+        _RAIL_FLOWS_COLANG_VERSION,
+        library_path=library_path,
+        skip_errors=True,
+    ):
+        if not module_name:
             continue
-        module_name = relative_root.split(os.sep)[0]
-
-        for file in sorted(files):
-            if not file.endswith(".co"):
-                continue
-            full_path = os.path.join(root, file)
-            try:
-                with open(full_path, encoding="utf-8") as f:
-                    content = parse_colang_file(file, content=f.read(), version=_RAIL_FLOWS_COLANG_VERSION)
-            except Exception as exc:
-                log.warning(
-                    "Skipping library file %s in manifest: failed to parse (%s)",
-                    full_path,
-                    type(exc).__name__,
-                )
-                continue
-            if not content:
-                continue
-            flow_names = {flow["id"] for flow in content.get("flows", []) if flow.get("id")}
-            modules.setdefault(module_name, set()).update(flow_names)
+        flow_names = {flow["id"] for flow in content.get("flows", []) if flow.get("id")}
+        modules.setdefault(module_name, set()).update(flow_names)
 
     return [ManifestRailModule(name=name, flows=sorted(flows)) for name, flows in sorted(modules.items()) if flows]
 
 
 def _discover_config_ids(app) -> list[str]:
-    """List guardrails config IDs (same discovery as /v1/rails/configs).
+    """List guardrails config IDs via ``api.list_rails_config_ids`` (same as ``/v1/rails/configs``)."""
+    from nemoguardrails.server.api import list_rails_config_ids
 
-    Used only to union actions across mounted configs; per-config payloads are
-    not part of `/admin/info`.
-    """
-    from nemoguardrails.server.api import _has_config_file
-
-    if app.single_config_mode:
-        return [app.single_config_id]
-
-    config_root = app.rails_config_path
-    if not os.path.isdir(config_root):
+    config_ids = list_rails_config_ids(
+        app.rails_config_path,
+        single_config_mode=app.single_config_mode,
+        single_config_id=app.single_config_id,
+    )
+    if not config_ids and not app.single_config_mode and not os.path.isdir(app.rails_config_path):
         log.warning(
             "Rails config path %r is missing or not a directory; admin actions catalog will be empty",
-            config_root,
+            app.rails_config_path,
         )
-        return []
-
-    return sorted(
-        f
-        for f in os.listdir(config_root)
-        if os.path.isdir(os.path.join(config_root, f))
-        and f[0] not in (".", "_")
-        and _has_config_file(os.path.join(config_root, f))
-    )
+    return sorted(config_ids)
 
 
 def _actions_from_rails(rails) -> List[ManifestAction]:

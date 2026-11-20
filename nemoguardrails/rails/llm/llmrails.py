@@ -57,6 +57,7 @@ from nemoguardrails.colang.v1_0.runtime.flows import _get_flow_params, _normaliz
 from nemoguardrails.colang.v1_0.runtime.runtime import Runtime, RuntimeV1_0
 from nemoguardrails.colang.v2_x.runtime.flows import Action, State
 from nemoguardrails.colang.v2_x.runtime.runtime import RuntimeV2_x
+from nemoguardrails.rails.llm.library_loader import iter_parsed_library_colang
 from nemoguardrails.context import (
     explain_info_var,
     generation_options_var,
@@ -324,33 +325,22 @@ class LLMRails(BaseGuardrails):
             self.config.flows.extend(default_flows)
 
             # We also need to load the content from the components library.
-            # Sort entries so the traversal order is filesystem-independent;
-            # otherwise the order in which library bot_messages are inserted
-            # (and which definition wins on collisions) varies between platforms.
-            library_path = os.path.join(os.path.dirname(__file__), "../../library")
-            for root, dirs, files in os.walk(library_path):
-                dirs.sort()
-                for file in sorted(files):
-                    # Extract the full path for the file
-                    full_path = os.path.join(root, file)
-                    if file.endswith(".co"):
-                        log.debug(f"Loading file: {full_path}")
-                        with open(full_path, "r", encoding="utf-8") as f:
-                            content = parse_colang_file(file, content=f.read(), version=config.colang_version)
-                            if not content:
-                                continue
+            # Shared with admin discoverability via library_loader so both see
+            # the same walk + parse_colang_file results.
+            for _module_name, _file, full_path, content in iter_parsed_library_colang(config.colang_version):
+                log.debug(f"Loading file: {full_path}")
 
-                        # We mark all the flows coming from the guardrails library as system flows.
-                        for flow_config in content["flows"]:
-                            flow_config["is_system_flow"] = True
+                # We mark all the flows coming from the guardrails library as system flows.
+                for flow_config in content["flows"]:
+                    flow_config["is_system_flow"] = True
 
-                        # We load all the flows
-                        self.config.flows.extend(content["flows"])
+                # We load all the flows
+                self.config.flows.extend(content["flows"])
 
-                        # And all the messages as well, if they have not been overwritten
-                        for message_id, utterances in content.get("bot_messages", {}).items():
-                            if message_id not in self.config.bot_messages:
-                                self.config.bot_messages[message_id] = utterances
+                # And all the messages as well, if they have not been overwritten
+                for message_id, utterances in content.get("bot_messages", {}).items():
+                    if message_id not in self.config.bot_messages:
+                        self.config.bot_messages[message_id] = utterances
 
         # Last but not least, we mark all the flows that are used in any of the rails
         # as system flows (so they don't end up in the prompt).

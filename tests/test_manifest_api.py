@@ -90,6 +90,7 @@ def test_manifest_documentation_pointers_distinguish_fork_from_upstream():
 
     docs = response.json()["documentation"]
     assert any("CLAUDE.md" in d["url"] for d in docs)
+    assert any(d["url"].endswith("/docs") or "/tree/develop/docs" in d["url"] for d in docs)
     upstream_entry = next(d for d in docs if urlparse(d["url"]).hostname == "docs.nvidia.com")
     assert "upstream" in upstream_entry["description"].lower()
 
@@ -171,23 +172,24 @@ def test_build_manifest_tolerates_no_fork_endpoints(monkeypatch, caplog):
 
 def test_discover_library_rails_skips_unparseable_file(tmp_path, monkeypatch, caplog):
     """A library .co file that fails to parse is skipped; other modules are still listed."""
+    from nemoguardrails.rails.llm import library_loader
+
     (tmp_path / "good").mkdir()
     (tmp_path / "good" / "flows.co").write_text("define flow good flow\n  bot say hi\n")
     (tmp_path / "broken").mkdir()
     (tmp_path / "broken" / "flows.co").write_text("BROKEN")
 
-    original_parse = manifest_module.parse_colang_file
+    original_parse = library_loader.parse_colang_file
 
     def parse_or_fail(filename, content, version):
         if content == "BROKEN":
             raise ValueError("secret-looking parser detail")
         return original_parse(filename, content=content, version=version)
 
-    monkeypatch.setattr(manifest_module, "_LIBRARY_PATH", str(tmp_path))
-    monkeypatch.setattr(manifest_module, "parse_colang_file", parse_or_fail)
+    monkeypatch.setattr(library_loader, "parse_colang_file", parse_or_fail)
 
-    with caplog.at_level("WARNING", logger="nemoguardrails.server.manifest"):
-        rails = {r.name: r.flows for r in manifest_module._discover_library_rails()}
+    with caplog.at_level("WARNING", logger="nemoguardrails.rails.llm.library_loader"):
+        rails = {r.name: r.flows for r in manifest_module._discover_library_rails(library_path=str(tmp_path))}
 
     assert rails == {"good": ["good flow"]}
     assert "failed to parse (ValueError)" in caplog.text

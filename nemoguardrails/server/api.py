@@ -275,33 +275,54 @@ app.single_config_mode = False
 app.single_config_id = None
 
 
+def _has_config_file(path: str) -> bool:
+    """Check if a directory (or its 'config' subdirectory) contains a config.yml/yaml."""
+    for candidate in [path, os.path.join(path, "config")]:
+        if os.path.exists(os.path.join(candidate, "config.yml")) or os.path.exists(
+            os.path.join(candidate, "config.yaml")
+        ):
+            return True
+    return False
+
+
+def list_rails_config_ids(
+    rails_config_path: str,
+    *,
+    single_config_mode: bool = False,
+    single_config_id: Optional[str] = None,
+) -> List[str]:
+    """List mounted guardrails config ids (shared by ``/v1/rails/configs`` and admin APIs)."""
+    if single_config_mode:
+        return [single_config_id] if single_config_id is not None else []
+
+    # Missing mount (e.g. operator path not ready yet) should not 500.
+    if not os.path.isdir(rails_config_path):
+        return []
+
+    return [
+        f
+        for f in os.listdir(rails_config_path)
+        if os.path.isdir(os.path.join(rails_config_path, f))
+        and f[0] != "."
+        and f[0] != "_"
+        and _has_config_file(os.path.join(rails_config_path, f))
+    ]
+
+
 @app.get(
     "/v1/rails/configs",
     summary="Get List of available rails configurations.",
 )
 async def get_rails_configs():
     """Returns the list of available rails configurations."""
-
-    # In single-config mode, we return a single config.
-    if app.single_config_mode:
-        # And we use the name of the root folder as the id of the config.
-        return [{"id": app.single_config_id}]
-
-    # Missing mount (e.g. operator path not ready yet) should not 500.
-    if not os.path.isdir(app.rails_config_path):
-        return []
-
-    # We extract all folder names as config names
-    config_ids = [
-        f
-        for f in os.listdir(app.rails_config_path)
-        if os.path.isdir(os.path.join(app.rails_config_path, f))
-        and f[0] != "."
-        and f[0] != "_"
-        and _has_config_file(os.path.join(app.rails_config_path, f))
+    return [
+        {"id": config_id}
+        for config_id in list_rails_config_ids(
+            app.rails_config_path,
+            single_config_mode=app.single_config_mode,
+            single_config_id=app.single_config_id,
+        )
     ]
-
-    return [{"id": config_id} for config_id in config_ids]
 
 
 @app.get(
@@ -358,16 +379,6 @@ async def list_models(request: Request):
 # One instance of LLMRails per config id
 llm_rails_instances: dict[str, LLMRails] = {}
 llm_rails_events_history_cache: dict[str, dict] = {}
-
-
-def _has_config_file(path: str) -> bool:
-    """Check if a directory (or its 'config' subdirectory) contains a config.yml/yaml."""
-    for candidate in [path, os.path.join(path, "config")]:
-        if os.path.exists(os.path.join(candidate, "config.yml")) or os.path.exists(
-            os.path.join(candidate, "config.yaml")
-        ):
-            return True
-    return False
 
 
 def _generate_cache_key(config_ids: List[str], model_name: Optional[str] = None) -> str:
