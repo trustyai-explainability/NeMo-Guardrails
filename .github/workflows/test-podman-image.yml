@@ -1,0 +1,72 @@
+name: Test Podman Image
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 0 * * 0"
+  push:
+    tags:
+      - "v*"
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  podman:
+    runs-on: ubuntu-latest
+    env:
+      IMAGE: nemoguardrails-server
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Get runner architecture
+        id: runner-arch
+        run: echo "arch=$(uname -m)" >> $GITHUB_OUTPUT
+
+      - name: Set image tags
+        run: |
+          ARCH=${STEPS_RUNNER_ARCH_OUTPUTS_ARCH}
+          echo "TEST_TAG=${{ env.IMAGE }}:${{ github.sha }}-$ARCH" >> $GITHUB_ENV
+        env:
+          STEPS_RUNNER_ARCH_OUTPUTS_ARCH: ${{ steps.runner-arch.outputs.arch }}
+
+      - name: Build image
+        run: podman build --platform linux/amd64 --file Dockerfile.server --tag "${TEST_TAG}" .
+
+      - name: Start container
+        run: |
+          podman run -d --name test_container \
+            -p 8000:8000 \
+            -v "${PWD}/examples/bots:/app/config:ro" \
+            -e CONFIG_ID=hello_world \
+            "${TEST_TAG}"
+
+      - name: Wait for container to be ready
+        timeout-minutes: 3
+        run: |
+          echo "Waiting for container to be ready..."
+          until curl --output /dev/null --silent --fail http://localhost:8000/v1/rails/configs; do
+            printf '.'
+            sleep 2
+          done
+          echo "Container is ready!"
+
+      - name: Check server status
+        run: |
+          RESPONSE_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/v1/rails/configs)
+          if [ "$RESPONSE_CODE" -ne 200 ]; then
+            echo "Server responded with code $RESPONSE_CODE."
+            exit 1
+          fi
+
+      - name: Run tests
+        run: curl -f http://localhost:8000/v1/rails/configs
+
+      - name: Stop and remove container
+        run: |
+          podman stop test_container
+          podman rm test_container
