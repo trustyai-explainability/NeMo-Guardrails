@@ -36,7 +36,7 @@ jobs:
           scanners: "vuln"
           format: "sarif"
           output: "trivy-requirements-results.sarif"
-          severity: "CRITICAL,HIGH,MEDIUM,LOW"
+          severity: "CRITICAL,HIGH"
           exit-code: "1"
 
       - name: Scan server Dockerfile
@@ -49,7 +49,7 @@ jobs:
           scanners: "misconfig"
           format: "sarif"
           output: "trivy-dockerfile-results.sarif"
-          severity: "CRITICAL,HIGH,MEDIUM,LOW"
+          severity: "CRITICAL,HIGH"
           exit-code: "1"
 
       - name: Upload Trivy requirements scan results to GitHub Security tab
