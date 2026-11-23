@@ -40,7 +40,7 @@ jobs:
       - name: Start container
         run: |
           podman run -d --name test_container \
-            -p 8000:8000 \
+            --network host \
             -v "${PWD}/examples/bots:/app/config:ro" \
             -e CONFIG_ID=hello_world \
             "${TEST_TAG}"
@@ -49,7 +49,7 @@ jobs:
         timeout-minutes: 3
         run: |
           echo "Waiting for container to be ready..."
-          until curl --output /dev/null --silent --fail http://localhost:8000/v1/rails/configs; do
+          until curl --output /dev/null --silent --fail http://127.0.0.1:8000/v1/rails/configs; do
             printf '.'
             sleep 2
           done
@@ -57,16 +57,16 @@ jobs:
 
       - name: Check server status
         run: |
-          RESPONSE_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/v1/rails/configs)
+          RESPONSE_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8000/v1/rails/configs)
           if [ "$RESPONSE_CODE" -ne 200 ]; then
             echo "Server responded with code $RESPONSE_CODE."
             exit 1
           fi
 
       - name: Run tests
-        run: curl -f http://localhost:8000/v1/rails/configs
+        run: curl -f http://127.0.0.1:8000/v1/rails/configs
 
       - name: Stop and remove container
+        if: always()
         run: |
-          podman stop test_container
-          podman rm test_container
+          podman rm --force test_container
