@@ -1,7 +1,7 @@
 [project]
 name = "nemoguardrails"
-version = "0.25.0-rc1"
-description = "NeMo Guardrails is an open-source toolkit for easily adding programmable guardrails to LLM-based conversational systems."
+version = "0.25.0"
+description = "NeMo Guardrails is an open-source library for applying programmable safety and security controls to LLM and agentic applications."
 license = "Apache-2.0"
 license-files = ["LICENSE*", "LICENCES*"]
 readme = "README.md"
@@ -28,7 +28,6 @@ dependencies = [
   "jinja2 (>=3.1.6)",
   "jsonschema (>=4.26.0,<5.0.0)",
   "lark (>=1.1.7)",
-  "nest-asyncio (>=1.5.6)",
   "numpy (>=1.21) ; python_version<'3.12'",
   "numpy (>=1.26) ; python_version>='3.12' and python_version<'3.13'",
   "numpy (>=2.1.0) ; python_version>='3.13'",
@@ -42,6 +41,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+
+nest-asyncio = ["nest-asyncio (>=1.5.6)"]
 
 tracing = ["opentelemetry-api (>=1.27.0,<2.0.0)", "aiofiles (>=24.1.0)"]
 
@@ -144,6 +145,7 @@ all = [
 lint = ["ruff==0.14.6"]
 typing = ["ty==0.0.56"]
 test = [
+  "nest-asyncio>=1.5.6",
   "pytest>=9.0.3,<10.0.0",
   "pytest-asyncio>=1.4.0,<2.0.0",
   "pytest-cov>=4.1.0",
