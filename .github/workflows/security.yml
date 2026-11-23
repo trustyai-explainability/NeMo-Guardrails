@@ -30,6 +30,7 @@ jobs:
         if: always()
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
         with:
+          version: "v0.76.2"
           scan-type: "fs"
           scan-ref: "requirements.txt"
           scanners: "vuln"
@@ -42,6 +43,7 @@ jobs:
         if: always()
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
         with:
+          version: "v0.76.2"
           scan-type: "fs"
           scan-ref: "Dockerfile.server"
           scanners: "misconfig"
