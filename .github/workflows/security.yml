@@ -26,62 +26,47 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@d31148d669074a8d0a63714ba94f3201e7020bc3 # v8.3.0
-        with:
-          version: "0.11.26"
-
-      - name: Install dependencies
-        run: uv lock --upgrade && uv sync --all-extras --group dev
-
-      - name: Run Trivy filesystem scan
+      - name: Scan Python requirements
+        if: always()
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
         with:
+          version: "v0.76.2"
           scan-type: "fs"
-          scan-ref: "."
-          format: "sarif"
-          output: "trivy-fs-results.sarif"
-          severity: "CRITICAL,HIGH,MEDIUM,LOW"
-          exit-code: "0"
-
-      - name: Run Trivy dependency scan
-        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
-        with:
-          scan-type: "fs"
-          scan-ref: "."
-          format: "sarif"
-          output: "trivy-deps-results.sarif"
-          severity: "CRITICAL,HIGH,MEDIUM,LOW"
+          scan-ref: "requirements.txt"
           scanners: "vuln"
-          exit-code: "0"
-
-      - name: Check for critical and high vulnerabilities
-        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
-        with:
-          scan-type: "fs"
-          scan-ref: "."
-          format: "table"
+          format: "sarif"
+          output: "trivy-requirements-results.sarif"
           severity: "CRITICAL,HIGH"
+          limit-severities-for-sarif: true
           exit-code: "1"
 
-      - name: Upload Trivy filesystem scan results to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@v3
-        if: always() && github.event_name == 'pull_request' && github.base_ref == 'develop'
+      - name: Scan server Dockerfile
+        if: always()
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
         with:
-          sarif_file: "trivy-fs-results.sarif"
-          category: "trivy-filesystem"
+          version: "v0.76.2"
+          scan-type: "fs"
+          scan-ref: "Dockerfile.server"
+          scanners: "misconfig"
+          format: "sarif"
+          output: "trivy-dockerfile-results.sarif"
+          severity: "CRITICAL,HIGH"
+          limit-severities-for-sarif: true
+          exit-code: "1"
 
-      - name: Upload Trivy dependency scan results to GitHub Security tab
+      - name: Upload Trivy requirements scan results to GitHub Security tab
         uses: github/codeql-action/upload-sarif@v3
         if: always() && github.event_name == 'pull_request' && github.base_ref == 'develop'
         with:
-          sarif_file: "trivy-deps-results.sarif"
-          category: "trivy-dependencies"
+          sarif_file: "trivy-requirements-results.sarif"
+          category: "trivy-requirements"
+
+      - name: Upload Trivy Dockerfile scan results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        if: always() && github.event_name == 'pull_request' && github.base_ref == 'develop'
+        with:
+          sarif_file: "trivy-dockerfile-results.sarif"
+          category: "trivy-dockerfile"
 
   bandit-scan:
     name: Bandit
