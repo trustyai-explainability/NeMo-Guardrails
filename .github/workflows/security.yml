@@ -37,6 +37,7 @@ jobs:
           format: "sarif"
           output: "trivy-requirements-results.sarif"
           severity: "CRITICAL,HIGH"
+          limit-severities-for-sarif: true
           exit-code: "1"
 
       - name: Scan server Dockerfile
@@ -50,6 +51,7 @@ jobs:
           format: "sarif"
           output: "trivy-dockerfile-results.sarif"
           severity: "CRITICAL,HIGH"
+          limit-severities-for-sarif: true
           exit-code: "1"
 
       - name: Upload Trivy requirements scan results to GitHub Security tab
