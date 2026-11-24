@@ -20,11 +20,13 @@ class correctly delegates method calls with properly formatted parameters.
 """
 
 import json
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from nemoguardrails import Guardrails
+from nemoguardrails.exceptions import RailTypeNotSupportedError
 from nemoguardrails.guardrails.compiled_rail import RailCompilationError, _is_installed, unservable_reason
 from nemoguardrails.guardrails.iorails import (
     REFUSAL_MESSAGE,
@@ -42,6 +44,25 @@ from nemoguardrails.rails.llm.options import GenerationOptions, RailsResult, Rai
 from nemoguardrails.types import LLMResponse
 from tests.guardrails.async_helpers import JAILBREAK_NIM_URL, mock_jailbreak_nim, mock_rail_model
 from tests.guardrails.test_data import CONTENT_SAFETY_CONFIG, NEMOGUARDS_CONFIG, TOPIC_SAFETY_CONFIG
+from tests.utils import check_entry_points, run_check
+
+
+def _initialize_iorails_lifecycle(instance: IORails, *args, **kwargs):
+    """Initialize readiness for an engine whose construction is stubbed."""
+    instance._running = False
+
+
+async def _start_iorails_lifecycle(instance: IORails):
+    """Publish readiness when the lifecycle double starts."""
+    instance._running = True
+
+
+async def _stop_iorails_lifecycle(instance: IORails):
+    """Clear readiness when the lifecycle double stops."""
+    instance._running = False
+
+
+_TOOLS = [{"type": "function", "function": {"name": "get_weather", "parameters": {"type": "object"}}}]
 
 # Valid IORails input/output rails for has_only_iorails_flows tests
 _IORAILS_BASE_RAILS = {
@@ -57,12 +78,12 @@ _LLMRAILS_ONLY_INPUT_REASON = (
     "'jailbreak detection heuristics' Conflates dependencies with 'jailbreak detection model', "
     "so IORails cannot tell whether it needs 'torch' and 'transformers' installed"
 )
-# Chosen from the retrieval-evidence group for needing no prompt template of its own, so a
-# config built for a routing test does not have to carry one.
-_LLMRAILS_ONLY_OUTPUT_FLOW = "alignscore check facts"
+# Chosen from the surfaces that still require retrieval evidence unavailable to IORails.
+_LLMRAILS_ONLY_OUTPUT_FLOW = "self check facts"
 _LLMRAILS_ONLY_OUTPUT_REASON = (
-    "'alignscore check facts' needs retrieval evidence, which manifest-driven execution does not supply yet"
+    "'self check facts' needs context variable(s) 'relevant_chunks', which IORails does not supply"
 )
+_LLMRAILS_ONLY_OUTPUT_PROMPT = {"task": "self_check_facts", "content": "placeholder"}
 
 
 def _make_iorails_config(rails: dict, extra_prompts: list | None = None) -> RailsConfig:
@@ -99,6 +120,25 @@ def mock_llm():
     """Create a mock LLM for testing."""
     llm = MagicMock()
     return llm
+
+
+@pytest.fixture
+def pristine_package_logger():
+    """Hand back an unconfigured ``nemoguardrails.guardrails`` logger, restoring it afterward."""
+    # A test inheriting the configured state cannot tell a fixed constructor from a broken one.
+    logger = logging.getLogger("nemoguardrails.guardrails")
+    saved_handlers = list(logger.handlers)
+    saved_propagate = logger.propagate
+    saved_level = logger.level
+    logger.handlers.clear()
+    logger.propagate = True
+    logger.setLevel(logging.NOTSET)
+    try:
+        yield logger
+    finally:
+        logger.handlers[:] = saved_handlers
+        logger.propagate = saved_propagate
+        logger.setLevel(saved_level)
 
 
 class TestGuardrailsRouting:
@@ -150,9 +190,9 @@ class TestGuardrailsRouting:
             guardrails.rails_engine.update_llm.assert_called_once_with(mock_new_llm)
 
     @pytest.mark.asyncio
-    @patch.object(IORails, "stop", new_callable=AsyncMock)
-    @patch.object(IORails, "start", new_callable=AsyncMock)
-    @patch.object(IORails, "__init__", return_value=None)
+    @patch.object(IORails, "stop", autospec=True, side_effect=_stop_iorails_lifecycle)
+    @patch.object(IORails, "start", autospec=True, side_effect=_start_iorails_lifecycle)
+    @patch.object(IORails, "__init__", autospec=True, side_effect=_initialize_iorails_lifecycle)
     async def test_use_iorails_true_iorails_config(
         self, mock_iorails_init, mock_start, mock_stop, _content_safety_rails_config
     ):
@@ -163,8 +203,7 @@ class TestGuardrailsRouting:
         We patch __init__ (rather than the class itself) so that IORails and LLMRails remain real
         classes. This lets the isinstance() checks in guardrails.py work correctly, while still
         giving us uninitialized instances whose methods we can replace with mocks.
-        start/stop are also patched because the __init__ patch leaves the instance without
-        _running, so the real methods would raise AttributeError during startup/shutdown.
+        Lifecycle doubles publish readiness without constructing real engine resources.
         """
 
         async with Guardrails(config=_content_safety_rails_config, verbose=False, use_iorails=True) as guardrails:
@@ -207,13 +246,13 @@ class TestGuardrailsRouting:
             )
 
     @pytest.mark.asyncio
-    @patch.object(IORails, "stop", new_callable=AsyncMock)
-    @patch.object(IORails, "start", new_callable=AsyncMock)
-    @patch.object(IORails, "__init__", return_value=None)
+    @patch.object(IORails, "stop", autospec=True, side_effect=_stop_iorails_lifecycle)
+    @patch.object(IORails, "start", autospec=True, side_effect=_start_iorails_lifecycle)
+    @patch.object(IORails, "__init__", autospec=True, side_effect=_initialize_iorails_lifecycle)
     async def test_check_delegates_to_iorails(
         self, mock_iorails_init, mock_start, mock_stop, _content_safety_rails_config
     ):
-        """check / check_async delegate to the IORails engine instead of raising."""
+        """check / check_async delegate to the IORails engine, forwarding rail_types and tools."""
         async with Guardrails(config=_content_safety_rails_config, verbose=False, use_iorails=True) as guardrails:
             assert isinstance(guardrails.rails_engine, IORails)
 
@@ -223,13 +262,15 @@ class TestGuardrailsRouting:
 
             messages = [{"role": "user", "content": "hello"}]
 
-            result = await guardrails.check_async(messages, rail_types=[RailType.INPUT])
+            result = await guardrails.check_async(messages, rail_types=[RailType.TOOL_CALL], tools=_TOOLS)
             assert result is expected
-            guardrails.rails_engine.check_async.assert_awaited_once_with(messages, rail_types=[RailType.INPUT])
+            guardrails.rails_engine.check_async.assert_awaited_once_with(
+                messages, rail_types=[RailType.TOOL_CALL], tools=_TOOLS
+            )
 
             sync_result = guardrails.check(messages)
             assert sync_result is expected
-            guardrails.rails_engine.check.assert_called_once_with(messages, rail_types=None)
+            guardrails.rails_engine.check.assert_called_once_with(messages, rail_types=None, tools=None)
 
     @pytest.mark.asyncio
     @patch.object(LLMRails, "__init__", return_value=None)
@@ -283,6 +324,15 @@ class TestGuardrailsRouting:
             guardrails.rails_engine.explain.assert_called_once()
             guardrails.rails_engine.update_llm.assert_called_once_with(mock_new_llm)
 
+    def test_use_iorails_true_per_tool_config_iorails_cannot_handle_raises(self):
+        """LLMRails never reads tool_call.per_tool / tool_result.per_tool, so a per-tool
+        config IORails cannot handle must raise instead of silently falling back to
+        LLMRails, which would run without the configured per-tool policy at all."""
+        config = _make_iorails_config(rails={"tool_call": {"per_tool": {"run_sql": ["this flow does not exist"]}}})
+
+        with pytest.raises(ValueError, match="per-tool rails"):
+            Guardrails(config=config, use_iorails=True)
+
 
 class TestGuardrailsInit:
     """Tests for Guardrails.__init__ method."""
@@ -304,7 +354,7 @@ class TestGuardrailsInit:
         assert guardrails.rails_engine == mock_llmrails_instance
 
     @patch("nemoguardrails.guardrails.guardrails.LLMRails")
-    def test_init_with_llm(self, mock_llmrails_class, _nemoguards_rails_config, mock_llm):
+    def test_init_with_llm(self, mock_llmrails_class, _nemoguards_rails_config, mock_llm, pristine_package_logger):
         """Test initialization with a custom LLM."""
         mock_llmrails_instance = MagicMock()
         mock_llmrails_class.return_value = mock_llmrails_instance
@@ -346,6 +396,52 @@ class TestGuardrailsInit:
         guardrails = Guardrails(config=_content_safety_rails_config, use_iorails=True)
         assert isinstance(guardrails.rails_engine, IORails)
         mock_iorails_init.assert_called_once_with(_content_safety_rails_config)
+
+
+class TestConstructionLoggingSideEffects:
+    """Constructing Guardrails must not take over the ``nemoguardrails.guardrails`` logger.
+
+    Doing so detaches it from the application's root handlers, silencing that subtree with no error.
+    """
+
+    @patch.object(IORails, "__init__", return_value=None)
+    def test_default_construction_leaves_the_package_logger_propagating(
+        self, _mock_iorails_init, _content_safety_rails_config, pristine_package_logger
+    ):
+        """A default construction leaves package records reaching ancestor handlers."""
+        Guardrails(config=_content_safety_rails_config, use_iorails=True)
+
+        assert pristine_package_logger.propagate is True
+
+    @patch.object(IORails, "__init__", return_value=None)
+    def test_default_construction_adds_no_handler_of_its_own(
+        self, _mock_iorails_init, _content_safety_rails_config, pristine_package_logger
+    ):
+        """A default construction attaches no handler, leaving output routing to the application."""
+        Guardrails(config=_content_safety_rails_config, use_iorails=True)
+
+        assert pristine_package_logger.handlers == []
+
+    @patch.object(IORails, "__init__", return_value=None)
+    def test_records_logged_after_a_default_construction_stay_visible(
+        self, _mock_iorails_init, _content_safety_rails_config, pristine_package_logger, caplog
+    ):
+        """A package record emitted after a construction still reaches caplog, which listens at root."""
+        with caplog.at_level(logging.WARNING):
+            Guardrails(config=_content_safety_rails_config, use_iorails=True)
+            logging.getLogger("nemoguardrails.guardrails.iorails").warning("visible after construction")
+
+        assert "visible after construction" in caplog.text
+
+    @patch.object(IORails, "__init__", return_value=None)
+    def test_verbose_construction_still_configures_the_package_logger(
+        self, _mock_iorails_init, _content_safety_rails_config, pristine_package_logger
+    ):
+        """verbose=True still opts in to the package's own handler and debug level."""
+        Guardrails(config=_content_safety_rails_config, use_iorails=True, verbose=True)
+
+        assert pristine_package_logger.handlers
+        assert pristine_package_logger.level == logging.DEBUG
 
 
 class TestIORailsUnsupportedReason:
@@ -398,7 +494,7 @@ class TestIORailsUnsupportedReason:
         reason = IORails.unsupported_reason(config, llm=None)
 
         assert reason is not None
-        assert "retrieval" in reason
+        assert "relevant_chunks_sep" in reason
 
     def test_a_transform_flow_is_admitted(self):
         """A rewrite-capable surface runs here, having been refused at selection until IORails
@@ -414,6 +510,7 @@ class TestIORailsUnsupportedReason:
                 "input": {"flows": ["content safety check input $model=content_safety"]},
                 "output": {"flows": [_LLMRAILS_ONLY_OUTPUT_FLOW]},
             },
+            extra_prompts=[_LLMRAILS_ONLY_OUTPUT_PROMPT],
         )
         reason = IORails.unsupported_reason(config, llm=None)
         assert reason == _LLMRAILS_ONLY_OUTPUT_REASON
@@ -498,8 +595,8 @@ class TestUnsupportedFlowsReason:
         assert reason == "config has unsupported input flows: ['self check input']"
 
     def test_label_appears_in_message(self):
-        reason = _unsupported_flows_reason(["bogus"], self.SUPPORTED, "tool output")
-        assert reason == "config has unsupported tool output flows: ['bogus']"
+        reason = _unsupported_flows_reason(["bogus"], self.SUPPORTED, "tool call")
+        assert reason == "config has unsupported tool call flows: ['bogus']"
 
     def test_offenders_reported_sorted_and_deduplicated(self):
         flows = ["zeta", "alpha", "zeta"]
@@ -526,8 +623,8 @@ class TestUnsupportedFlowsReason:
         assert _unsupported_flows_reason(["$model=x"], self.SUPPORTED, "input") is None
 
     def test_empty_supported_set_rejects_every_named_flow(self):
-        reason = _unsupported_flows_reason(["anything"], frozenset(), "tool input")
-        assert reason == "config has unsupported tool input flows: ['anything']"
+        reason = _unsupported_flows_reason(["anything"], frozenset(), "tool result")
+        assert reason == "config has unsupported tool result flows: ['anything']"
 
 
 class TestDuplicateFlowsReason:
@@ -535,27 +632,27 @@ class TestDuplicateFlowsReason:
     duplicate pre-check in ``IORails.unsupported_reason``."""
 
     def test_no_duplicates_returns_none(self):
-        assert _duplicate_flows_reason(["tool call validation"], "tool output") is None
+        assert _duplicate_flows_reason(["tool call validation"], "tool call") is None
 
     def test_empty_flows_returns_none(self):
-        assert _duplicate_flows_reason([], "tool output") is None
+        assert _duplicate_flows_reason([], "tool call") is None
 
     def test_exact_duplicate_is_caught(self):
-        reason = _duplicate_flows_reason(["tool call validation", "tool call validation"], "tool output")
+        reason = _duplicate_flows_reason(["tool call validation", "tool call validation"], "tool call")
         assert reason is not None
-        assert "duplicate tool output flows" in reason
+        assert "duplicate tool call flows" in reason
 
     def test_normalized_duplicate_is_caught(self):
         # Entries differing only by a `$model=` suffix normalize to the same name.
-        reason = _duplicate_flows_reason(["tool call validation", "tool call validation $model=x"], "tool output")
+        reason = _duplicate_flows_reason(["tool call validation", "tool call validation $model=x"], "tool call")
         assert reason is not None
         assert "duplicate" in reason
 
     def test_flow_normalizing_to_empty_is_skipped(self):
         # A flow that normalizes to an empty name has no comparable identity, so it is
         # neither flagged as a duplicate nor matched against other empty-normalizing flows.
-        assert _duplicate_flows_reason(["$model=x", "tool call validation"], "tool output") is None
-        assert _duplicate_flows_reason(["$model=x", "$model=y"], "tool output") is None
+        assert _duplicate_flows_reason(["$model=x", "tool call validation"], "tool call") is None
+        assert _duplicate_flows_reason(["$model=x", "$model=y"], "tool call") is None
 
 
 class TestRequireIORails:
@@ -1088,13 +1185,12 @@ class TestGuardrailsLifecycle:
     """Test that startup/shutdown delegate to the rails engine."""
 
     @pytest.mark.asyncio
-    @patch.object(IORails, "stop", new_callable=AsyncMock)
-    @patch.object(IORails, "start", new_callable=AsyncMock)
-    @patch.object(IORails, "__init__", return_value=None)
+    @patch.object(IORails, "stop", autospec=True, side_effect=_stop_iorails_lifecycle)
+    @patch.object(IORails, "start", autospec=True, side_effect=_start_iorails_lifecycle)
+    @patch.object(IORails, "__init__", autospec=True, side_effect=_initialize_iorails_lifecycle)
     async def test_startup_calls_start_on_iorails(self, mock_init, mock_start, mock_stop, _content_safety_rails_config):
         """startup() delegates to IORails.start().
-        start/stop are patched because the __init__ patch leaves the instance without
-        _running, so the real methods would raise AttributeError.
+        Lifecycle doubles publish readiness without constructing real engine resources.
         """
         guardrails = Guardrails(config=_content_safety_rails_config, verbose=False, use_iorails=True)
         assert isinstance(guardrails.rails_engine, IORails)
@@ -1117,9 +1213,9 @@ class TestGuardrailsLifecycle:
         await guardrails.shutdown()
 
     @pytest.mark.asyncio
-    @patch.object(IORails, "stop", new_callable=AsyncMock)
-    @patch.object(IORails, "start", new_callable=AsyncMock)
-    @patch.object(IORails, "__init__", return_value=None)
+    @patch.object(IORails, "stop", autospec=True, side_effect=_stop_iorails_lifecycle)
+    @patch.object(IORails, "start", autospec=True, side_effect=_start_iorails_lifecycle)
+    @patch.object(IORails, "__init__", autospec=True, side_effect=_initialize_iorails_lifecycle)
     async def test_startup_is_idempotent(self, mock_init, mock_start, mock_stop, _content_safety_rails_config):
         """Calling startup() twice only starts engines once."""
         guardrails = Guardrails(config=_content_safety_rails_config, verbose=False, use_iorails=True)
@@ -1128,21 +1224,21 @@ class TestGuardrailsLifecycle:
         mock_start.assert_called_once()
 
     @pytest.mark.asyncio
-    @patch.object(IORails, "stop", new_callable=AsyncMock)
-    @patch.object(IORails, "start", new_callable=AsyncMock)
-    @patch.object(IORails, "__init__", return_value=None)
-    async def test_shutdown_without_startup_is_noop(
+    @patch.object(IORails, "stop", autospec=True, side_effect=_stop_iorails_lifecycle)
+    @patch.object(IORails, "start", autospec=True, side_effect=_start_iorails_lifecycle)
+    @patch.object(IORails, "__init__", autospec=True, side_effect=_initialize_iorails_lifecycle)
+    async def test_shutdown_without_startup_delegates_cleanup(
         self, mock_init, mock_start, mock_stop, _content_safety_rails_config
     ):
-        """Calling shutdown() without startup() does not call stop."""
+        """The core owns cleanup state, including an incomplete startup."""
         guardrails = Guardrails(config=_content_safety_rails_config, verbose=False, use_iorails=True)
         await guardrails.shutdown()
-        mock_stop.assert_not_called()
+        mock_stop.assert_awaited_once()
 
     @pytest.mark.asyncio
-    @patch.object(IORails, "stop", new_callable=AsyncMock)
-    @patch.object(IORails, "start", new_callable=AsyncMock)
-    @patch.object(IORails, "__init__", return_value=None)
+    @patch.object(IORails, "stop", autospec=True, side_effect=_stop_iorails_lifecycle)
+    @patch.object(IORails, "start", autospec=True, side_effect=_start_iorails_lifecycle)
+    @patch.object(IORails, "__init__", autospec=True, side_effect=_initialize_iorails_lifecycle)
     async def test_generate_async_lazy_starts(self, mock_init, mock_start, mock_stop, _content_safety_rails_config):
         """generate_async() calls startup() automatically if not already started."""
         guardrails = Guardrails(config=_content_safety_rails_config, verbose=False, use_iorails=True)
@@ -1153,9 +1249,9 @@ class TestGuardrailsLifecycle:
         mock_start.assert_called_once()
 
     @pytest.mark.asyncio
-    @patch.object(IORails, "stop", new_callable=AsyncMock)
-    @patch.object(IORails, "start", new_callable=AsyncMock)
-    @patch.object(IORails, "__init__", return_value=None)
+    @patch.object(IORails, "stop", autospec=True, side_effect=_stop_iorails_lifecycle)
+    @patch.object(IORails, "start", autospec=True, side_effect=_start_iorails_lifecycle)
+    @patch.object(IORails, "__init__", autospec=True, side_effect=_initialize_iorails_lifecycle)
     async def test_stream_async_lazy_starts(self, mock_init, mock_start, mock_stop, _content_safety_rails_config):
         """stream_async() calls startup() automatically if not already started."""
 
@@ -1173,9 +1269,9 @@ class TestGuardrailsLifecycle:
         assert chunks == ["hello"]
 
     @pytest.mark.asyncio
-    @patch.object(IORails, "stop", new_callable=AsyncMock)
-    @patch.object(IORails, "start", new_callable=AsyncMock, side_effect=RuntimeError("engine down"))
-    @patch.object(IORails, "__init__", return_value=None)
+    @patch.object(IORails, "stop", autospec=True, side_effect=_stop_iorails_lifecycle)
+    @patch.object(IORails, "start", autospec=True, side_effect=RuntimeError("engine down"))
+    @patch.object(IORails, "__init__", autospec=True, side_effect=_initialize_iorails_lifecycle)
     async def test_startup_failure_leaves_not_started(
         self, mock_init, mock_start, mock_stop, _content_safety_rails_config
     ):
@@ -1215,14 +1311,14 @@ class TestIORailsCanHandle:
         config = _make_iorails_config({**_IORAILS_BASE_RAILS, "actions": {"instant_actions": ["some_action"]}})
         assert not IORails.can_handle(config)
 
-    def test_unsupported_tool_output_rails(self):
-        """Configs with tool_output rails are not supported by IORails."""
-        config = _make_iorails_config({**_IORAILS_BASE_RAILS, "tool_output": {"flows": ["check tool output"]}})
+    def test_unsupported_tool_call_rails(self):
+        """Configs with tool_call rails are not supported by IORails."""
+        config = _make_iorails_config({**_IORAILS_BASE_RAILS, "tool_call": {"flows": ["check tool call"]}})
         assert not IORails.can_handle(config)
 
-    def test_unsupported_tool_input_rails(self):
-        """Configs with tool_input rails are not supported by IORails."""
-        config = _make_iorails_config({**_IORAILS_BASE_RAILS, "tool_input": {"flows": ["check tool input"]}})
+    def test_unsupported_tool_result_rails(self):
+        """Configs with tool_result rails are not supported by IORails."""
+        config = _make_iorails_config({**_IORAILS_BASE_RAILS, "tool_result": {"flows": ["check tool result"]}})
         assert not IORails.can_handle(config)
 
     def test_topic_safety_input_rails_supported(self):
@@ -1267,7 +1363,10 @@ class TestIORailsCanHandle:
                     ]
                 },
             },
-            extra_prompts=[{"task": "self_check_output", "content": "placeholder"}],
+            extra_prompts=[
+                {"task": "self_check_output", "content": "placeholder"},
+                _LLMRAILS_ONLY_OUTPUT_PROMPT,
+            ],
         )
         assert IORails.can_handle(config) is False
 
@@ -1276,9 +1375,9 @@ class TestStreamAsyncIORails:
     """Tests for stream_async when routed through IORails."""
 
     @pytest.mark.asyncio
-    @patch.object(IORails, "stop", new_callable=AsyncMock)
-    @patch.object(IORails, "start", new_callable=AsyncMock)
-    @patch.object(IORails, "__init__", return_value=None)
+    @patch.object(IORails, "stop", autospec=True, side_effect=_stop_iorails_lifecycle)
+    @patch.object(IORails, "start", autospec=True, side_effect=_start_iorails_lifecycle)
+    @patch.object(IORails, "__init__", autospec=True, side_effect=_initialize_iorails_lifecycle)
     async def test_delegates_to_iorails(self, mock_init, mock_start, mock_stop, _content_safety_rails_config):
         """stream_async delegates to IORails.stream_async with correct args."""
 
@@ -1302,9 +1401,9 @@ class TestStreamAsyncIORails:
             )
 
     @pytest.mark.asyncio
-    @patch.object(IORails, "stop", new_callable=AsyncMock)
-    @patch.object(IORails, "start", new_callable=AsyncMock)
-    @patch.object(IORails, "__init__", return_value=None)
+    @patch.object(IORails, "stop", autospec=True, side_effect=_stop_iorails_lifecycle)
+    @patch.object(IORails, "start", autospec=True, side_effect=_start_iorails_lifecycle)
+    @patch.object(IORails, "__init__", autospec=True, side_effect=_initialize_iorails_lifecycle)
     async def test_forwards_supported_kwargs(self, mock_init, mock_start, mock_stop, _content_safety_rails_config):
         """options and include_metadata are forwarded to IORails.stream_async."""
 
@@ -1332,9 +1431,9 @@ class TestStreamAsyncIORails:
             )
 
     @pytest.mark.asyncio
-    @patch.object(IORails, "stop", new_callable=AsyncMock)
-    @patch.object(IORails, "start", new_callable=AsyncMock)
-    @patch.object(IORails, "__init__", return_value=None)
+    @patch.object(IORails, "stop", autospec=True, side_effect=_stop_iorails_lifecycle)
+    @patch.object(IORails, "start", autospec=True, side_effect=_start_iorails_lifecycle)
+    @patch.object(IORails, "__init__", autospec=True, side_effect=_initialize_iorails_lifecycle)
     async def test_filters_unsupported_kwargs(self, mock_init, mock_start, mock_stop, _content_safety_rails_config):
         """LLMRails-only kwargs (state, generator, etc.) are not passed to IORails and a warning is logged."""
 
@@ -1366,9 +1465,9 @@ class TestStreamAsyncIORails:
             )
 
     @pytest.mark.asyncio
-    @patch.object(IORails, "stop", new_callable=AsyncMock)
-    @patch.object(IORails, "start", new_callable=AsyncMock)
-    @patch.object(IORails, "__init__", return_value=None)
+    @patch.object(IORails, "stop", autospec=True, side_effect=_stop_iorails_lifecycle)
+    @patch.object(IORails, "start", autospec=True, side_effect=_start_iorails_lifecycle)
+    @patch.object(IORails, "__init__", autospec=True, side_effect=_initialize_iorails_lifecycle)
     async def test_prompt_converted_to_messages(self, mock_init, mock_start, mock_stop, _content_safety_rails_config):
         """A string prompt is converted to messages before reaching IORails."""
 
@@ -1464,7 +1563,7 @@ class TestLLMRailsOnlyMethods:
         messages = [{"role": "user", "content": "hi"}]
         result = guardrails.check(messages, rail_types=[RailType.INPUT])
 
-        mock_llmrails_instance.check.assert_called_once_with(messages, rail_types=[RailType.INPUT])
+        mock_llmrails_instance.check.assert_called_once_with(messages, rail_types=[RailType.INPUT], tools=None)
         assert result is sentinel
 
     @pytest.mark.asyncio
@@ -1481,7 +1580,7 @@ class TestLLMRailsOnlyMethods:
         messages = [{"role": "user", "content": "hi"}]
         result = await guardrails.check_async(messages, rail_types=[RailType.OUTPUT])
 
-        mock_llmrails_instance.check_async.assert_called_once_with(messages, rail_types=[RailType.OUTPUT])
+        mock_llmrails_instance.check_async.assert_called_once_with(messages, rail_types=[RailType.OUTPUT], tools=None)
         assert result is sentinel
 
     @patch("nemoguardrails.guardrails.guardrails.LLMRails")
@@ -1777,7 +1876,9 @@ class TestGuardrailsPickle:
         assert mock_llmrails_init.call_count == 2
 
     @patch.object(IORails, "__init__", return_value=None)
-    def test_getstate_preserves_verbose_true(self, mock_iorails_init, _nemoguards_rails_config):
+    def test_getstate_preserves_verbose_true(
+        self, mock_iorails_init, _nemoguards_rails_config, pristine_package_logger
+    ):
         """__getstate__ captures verbose=True so a verbose Guardrails round-trips
         with logging configuration intact."""
         guardrails = Guardrails(config=_nemoguards_rails_config, verbose=True)
@@ -1793,7 +1894,9 @@ class TestGuardrailsPickle:
         assert guardrails.verbose is True
 
     @patch.object(IORails, "__init__", return_value=None)
-    def test_pickle_round_trip_preserves_verbose(self, mock_iorails_init, _nemoguards_rails_config):
+    def test_pickle_round_trip_preserves_verbose(
+        self, mock_iorails_init, _nemoguards_rails_config, pristine_package_logger
+    ):
         """Full round-trip: a Guardrails constructed with verbose=True must come
         back from __getstate__/__setstate__ with verbose=True. Regression for the
         bug where verbose was hardcoded to False on restore, silently obscuring
@@ -2105,6 +2208,7 @@ class TestScopeGateCharacterization:
             ("input", "guardrailsai check input"),
             ("input", "hf classifier check input"),
             ("input", "jailbreak detection model"),
+            ("input", "language detector check input"),
             ("input", "llama guard check input"),
             ("input", "mask pii on input"),
             ("input", "mask sensitive data on input"),
@@ -2117,6 +2221,7 @@ class TestScopeGateCharacterization:
             ("input", "self check input"),
             ("input", "topic safety check input"),
             ("input", "trend ai guard input"),
+            ("input", "zscaler aiguard moderation on input"),
             ("output", "activefence moderation on output"),
             ("output", "ai defense inspect response"),
             ("output", "autoalign check output"),
@@ -2145,6 +2250,7 @@ class TestScopeGateCharacterization:
             ("output", "regex check output"),
             ("output", "self check output"),
             ("output", "trend ai guard output"),
+            ("output", "zscaler aiguard moderation on output"),
         }
     )
 
@@ -2160,7 +2266,7 @@ class TestScopeGateCharacterization:
         return IORails._unservable_rails_reason([flow], direction, deps)
 
     def test_the_admitted_surfaces_are_exactly_the_pinned_set(self):
-        """Every catalog surface in scope is one of the 59 named here, and vice versa."""
+        """Every catalog surface in scope is one of the 60 named here, and vice versa."""
         admitted = {
             (direction.value, name)
             for direction in (SurfaceDirection.INPUT, SurfaceDirection.OUTPUT)
@@ -2198,7 +2304,7 @@ class TestScopeGateCharacterization:
             (
                 "self check facts",
                 SurfaceDirection.OUTPUT,
-                "'self check facts' needs retrieval evidence, which manifest-driven execution does not supply yet",
+                "'self check facts' needs context variable(s) 'relevant_chunks', which IORails does not supply",
             ),
             (
                 "content safety check output",
@@ -2217,3 +2323,53 @@ class TestScopeGateCharacterization:
     def test_the_refusal_reason_names_the_limitation(self, flow, direction, expected):
         """Each class of refusal reports why, in wording a config author can act on."""
         assert self._surface_reason(flow, direction) == expected
+
+
+@pytest.fixture
+def llmrails_guardrails():
+    """A Guardrails facade serving a Colang input-rail config on LLMRails."""
+    config = RailsConfig.from_content(
+        """
+        define flow input rail
+          if $user_message == "block"
+            bot refuse to respond
+            stop
+        """,
+        """
+        rails:
+            input:
+                flows:
+                    - input rail
+        """,
+    )
+    return Guardrails(config=config, use_iorails=False)
+
+
+class TestCheckToolRailsOnLLMRails:
+    """On LLMRails, the facade fails loud for tool checks rather than ignoring what LLMRails cannot run."""
+
+    @check_entry_points
+    @pytest.mark.parametrize("tools", [None, _TOOLS], ids=["without_tools", "with_tools"])
+    def test_tool_rail_types_raise_not_supported(self, llmrails_guardrails, entry_point, tools):
+        """Tool rail types raise ``RailTypeNotSupportedError`` from either entry point, with or without ``tools``."""
+        with pytest.raises(RailTypeNotSupportedError):
+            run_check(
+                llmrails_guardrails,
+                entry_point,
+                [{"role": "user", "content": "hi"}],
+                rail_types=[RailType.TOOL_CALL, RailType.TOOL_RESULT],
+                tools=tools,
+            )
+
+    @check_entry_points
+    @pytest.mark.parametrize("rail_types", [None, [RailType.INPUT]], ids=["auto_detected", "input"])
+    def test_tools_alone_raise_not_supported(self, llmrails_guardrails, entry_point, rail_types):
+        """``tools`` without a tool rail type raises ``RailTypeNotSupportedError`` from either entry point."""
+        with pytest.raises(RailTypeNotSupportedError, match="tools"):
+            run_check(
+                llmrails_guardrails,
+                entry_point,
+                [{"role": "user", "content": "hi"}],
+                rail_types=rail_types,
+                tools=_TOOLS,
+            )

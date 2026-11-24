@@ -15,6 +15,7 @@
 
 from nemoguardrails.manifests import (
     ActionRef,
+    Binding,
     ConfigSpecRef,
     EnvVar,
     RailActions,
@@ -67,11 +68,13 @@ RAIL = RailManifest(
                 name="jailbreak detection heuristics",
                 direction=RailDirection.INPUT,
                 action=JAILBREAK_DETECTION_HEURISTICS,
+                bindings=(Binding.context("user_message", "user_message"),),
             ),
             RailSurface(
                 name="jailbreak detection model",
                 direction=RailDirection.INPUT,
                 action=JAILBREAK_DETECTION_MODEL,
+                bindings=(Binding.context("user_message", "user_message"),),
             ),
         ),
         requirements=RailRequirements(
@@ -109,7 +112,7 @@ RAIL = RailManifest(
             ),
             services=(ServiceRequirement(name="NVIDIA NIM", required=False),),
             # `transformers` required by both in-process paths
-            optional_dependencies=("torch", "transformers"),
+            optional_dependencies=("torch", "transformers", "tokenizers"),
         ),
         privacy=RailPrivacy(sends_user_text=True, remote_services=("NVIDIA NIM",)),
     ),

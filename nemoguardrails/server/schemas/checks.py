@@ -15,9 +15,35 @@
 
 """Schemas for the /v1/guardrail/checks endpoint (fork-specific)."""
 
-from typing import List, Optional
+from typing import Annotated, Any, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
+
+from nemoguardrails.server.schemas.openai import GuardrailsChatCompletionRequest
+
+
+class _LegacyCheckMessage(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    role: str
+
+
+def _validate_legacy_check_message(message: Any) -> Any:
+    _LegacyCheckMessage.model_validate(message)
+    return message
+
+
+class LegacyGuardrailCheckRequest(GuardrailsChatCompletionRequest):
+    """Preserve legacy message fields, including names on standalone tool results."""
+
+    messages: Optional[
+        List[
+            Annotated[
+                dict[str, Any],
+                BeforeValidator(_validate_legacy_check_message, json_schema_input_type=_LegacyCheckMessage),
+            ]
+        ]
+    ] = Field(default=None, description="The messages to check against guardrails.")
 
 
 class RailStatus(BaseModel):

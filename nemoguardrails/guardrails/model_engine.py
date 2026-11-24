@@ -20,6 +20,7 @@ OpenAI-compatible /v1/chat/completions endpoint via aiohttp.
 Retries are handled by aiohttp-retry (ExponentialRetry).
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -31,24 +32,41 @@ from typing import TYPE_CHECKING, Any, NamedTuple, Optional, cast
 
 import aiohttp
 from aiohttp_retry import RetryClient
+from pydantic import SecretStr
 
+from nemoguardrails.exceptions import (
+    LLMClientError,
+    LLMConnectionError,
+    LLMResponseValidationError,
+    LLMTimeoutError,
+)
 from nemoguardrails.guardrails._http import (
     DEFAULT_MAX_ATTEMPTS,
     DEFAULT_TIMEOUT_CONNECT,
     DEFAULT_TIMEOUT_TOTAL,
     merge_headers_case_insensitive,
+    normalize_query_params,
     safe_read_body,
 )
 from nemoguardrails.guardrails.base_engine import BaseEngine
-from nemoguardrails.guardrails.guardrails_types import LLMMessages, get_request_id, truncate
+from nemoguardrails.guardrails.guardrails_types import LLMMessages, get_request_id, quoted_identity, truncate
 from nemoguardrails.guardrails.telemetry import (
     llm_call_span,
     set_llm_call_content,
     set_llm_request_attributes,
     set_llm_response_attributes,
 )
-from nemoguardrails.guardrails.tool_schema import Tool, ToolExchange, ToolResult, Toolset
+from nemoguardrails.guardrails.tool_schema import (
+    LatestToolCall,
+    Tool,
+    ToolCallExtractionError,
+    ToolExchange,
+    ToolResult,
+    Toolset,
+)
+from nemoguardrails.llm.clients._errors import ErrorContext, raise_for_sse_error, raise_for_status
 from nemoguardrails.rails.llm.config import Model
+from nemoguardrails.rails.llm.options import ToolViolationType
 from nemoguardrails.tracing.constants import (
     llm_operation_duration,
     record_time_per_output_chunk,
@@ -124,6 +142,7 @@ class _RequestParams(NamedTuple):
     url: str
     headers: dict[str, str]
     body: dict[str, Any]
+    params: tuple[tuple[str, str], ...]
 
 
 # TODO: duplicates OpenAIChatModel._to_messages in
@@ -185,9 +204,9 @@ def _parse_chat_completion(response: dict) -> LLMResponse:
     exposes it (NIM, DeepSeek-style). Tool calls are parsed from
     ``message.tool_calls`` (OpenAI shape) into ``LLMResponse.tool_calls`` via
     ``ChatMessage.from_dict``, which normalizes JSON-string arguments into a
-    dict. ``content`` is ``None`` on a tool-call-only response and is
-    normalized to an empty string; a ``None`` content with no tool calls is
-    treated as a malformed response.
+    dict. ``content`` is ``None`` on both a tool-call-only response and a
+    reasoning-only frame, and normalizes to an empty string in each case; a
+    ``None`` content with neither is treated as a malformed response.
     """
     try:
         choice = response["choices"][0]
@@ -198,18 +217,26 @@ def _parse_chat_completion(response: dict) -> LLMResponse:
 
     raw_tool_calls = message.get("tool_calls")
 
+    # Validated like content below: reasoning reaches ``LLMResponse.reasoning``,
+    # which is typed ``Optional[str]``, and a truthy non-string would otherwise
+    # also rescue a null content on the branch below.
+    raw_reasoning = message.get("reasoning_content")
+    if raw_reasoning is not None and not isinstance(raw_reasoning, str):
+        raise ValueError(f"Expected string reasoning_content, got {type(raw_reasoning).__name__}")
+    reasoning = raw_reasoning or None
+
     if content is None:
-        # A tool-call-only response legitimately carries content=None; a null
-        # content with no tool calls is malformed.
-        if not raw_tool_calls:
+        # Tool-call-only and reasoning-only frames both legitimately carry
+        # content=None. The OpenAI schema permits a bare null content too, but
+        # with neither tool calls nor reasoning there is nothing the caller can
+        # act on, so it stays an error rather than a silently empty answer.
+        if not raw_tool_calls and not reasoning:
             raise ValueError("Expected string content, got NoneType")
         content = ""
     elif not isinstance(content, str):
         raise ValueError(f"Expected string content, got {type(content).__name__}")
 
     tool_calls = ChatMessage.from_dict(message).tool_calls if raw_tool_calls else None
-
-    reasoning = message.get("reasoning_content") or None
 
     usage = _parse_usage(response["usage"]) if response.get("usage") else None
 
@@ -412,7 +439,7 @@ _TOOL_PARSERS = {
 }
 
 
-def _tool_result_from_message(message: dict) -> ToolResult:
+def _tool_result_from_message(message: dict, message_index: int | None = None) -> ToolResult:
     """Normalize one OpenAI Chat Completions ``role:"tool"`` message into a ``ToolResult``.
 
     This shape has no error flag, so ``is_error`` is always ``False``.
@@ -421,6 +448,7 @@ def _tool_result_from_message(message: dict) -> ToolResult:
         call_id=message.get("tool_call_id"),
         name=message.get("name"),
         content=message.get("content"),
+        message_index=message_index,
     )
 
 
@@ -473,7 +501,8 @@ def _extract_tool_exchanges_openai(messages: LLMMessages) -> list[ToolExchange]:
     # it to None so the next tool result starts a fresh exchange instead of attaching to
     # a closed turn.
     open_exchange: ToolExchange | None = None
-    for message in messages:
+    # Every message counts toward the index, so a violation points into the caller's own list.
+    for message_index, message in enumerate(messages):
         if not isinstance(message, dict):
             continue
         role = message.get("role")
@@ -481,7 +510,7 @@ def _extract_tool_exchanges_openai(messages: LLMMessages) -> list[ToolExchange]:
             if open_exchange is None:
                 open_exchange = ToolExchange(calls=[], results=[])
                 exchanges.append(open_exchange)
-            open_exchange.results.append(_tool_result_from_message(message))
+            open_exchange.results.append(_tool_result_from_message(message, message_index))
         elif role == "assistant" and message.get("tool_calls"):
             open_exchange = ToolExchange(calls=_tool_calls_from_message(message), results=[])
             exchanges.append(open_exchange)
@@ -495,18 +524,158 @@ def _extract_tool_exchanges_nim(messages: LLMMessages) -> list[ToolExchange]:
     return _extract_tool_exchanges_openai(messages)
 
 
+# How much of a failed response to read for error classification. Large enough that any
+# realistic provider error body parses as JSON and yields its message/code/param, bounded
+# because an unparseable body (an HTML proxy error page) becomes the client-facing message
+# verbatim, and must not be forwarded whole.
+_ERROR_BODY_MAX_CHARS = 8192
+
+
 _TOOL_EXCHANGE_EXTRACTORS = {
     "openai": _extract_tool_exchanges_openai,
     "nim": _extract_tool_exchanges_nim,
 }
 
 
+def _latest_assistant_message(messages: LLMMessages) -> dict | None:
+    """The last assistant message in *messages*, or None when there is none."""
+    for message in reversed(messages):
+        if isinstance(message, dict) and message.get("role") == "assistant":
+            return message
+    return None
+
+
+def _string_or_none(value: object) -> str | None:
+    """*value* when it is a string, else None, so an error's identity fields hold only strings."""
+    return value if isinstance(value, str) else None
+
+
+def _describe_tool_call(index: int, tool_call_id: str | None) -> str:
+    """Name a tool call in an error message by its id, else by its position."""
+    if tool_call_id:
+        return f"tool call '{quoted_identity(tool_call_id)}'"
+    return f"tool call at index {index}"
+
+
+def _legacy_function_call_error(function_call: object) -> ToolCallExtractionError:
+    """The error for a legacy ``function_call``, which no tool rail validates."""
+    name = function_call.get("name") if isinstance(function_call, dict) else None
+    return ToolCallExtractionError(
+        "legacy function_call is not validated by tool rails",
+        violation_type=ToolViolationType.LEGACY_FUNCTION_CALL,
+        tool_name=_string_or_none(name),
+    )
+
+
+def _malformed_tool_call_field(entry: dict, function: dict) -> str | None:
+    """The first identity field of a wire tool call that is not a string, or None when all of them are."""
+    tool_call_id = entry.get("id")
+    if tool_call_id is not None and not isinstance(tool_call_id, str):
+        return "id"
+    if not isinstance(entry.get("type", "function"), str):
+        return "type"
+    name = function.get("name")
+    if not isinstance(name, str) or not name:
+        return "function name"
+    return None
+
+
+def _parse_latest_tool_call(entry: object, index: int) -> ToolCall:
+    """Strictly parse one wire tool call, raising a ``ToolCallExtractionError`` that omits its arguments."""
+    if not isinstance(entry, dict):
+        raise ToolCallExtractionError(
+            f"tool call at index {index} is not an object",
+            violation_type=ToolViolationType.MALFORMED_TOOL_CALL,
+            index=index,
+        )
+    tool_call_id = _string_or_none(entry.get("id"))
+    function = entry.get("function")
+    # A call without a function object is not the Chat Completions shape; ChatMessage.from_dict would
+    # read it as the legacy flat shape, which ignores an `arguments` key and validates `{}` instead.
+    if not isinstance(function, dict):
+        raise ToolCallExtractionError(
+            f"{_describe_tool_call(index, tool_call_id)} does not carry a function object",
+            violation_type=ToolViolationType.MALFORMED_TOOL_CALL,
+            index=index,
+            tool_call_id=tool_call_id,
+        )
+    malformed_field = _malformed_tool_call_field(entry, function)
+    if malformed_field is not None:
+        # ChatMessage.from_dict does not type these, and a non-string name breaks the per-tool rail lookup.
+        raise ToolCallExtractionError(
+            f"{_describe_tool_call(index, tool_call_id)} has a malformed {malformed_field}",
+            violation_type=ToolViolationType.MALFORMED_TOOL_CALL,
+            index=index,
+            tool_call_id=tool_call_id,
+            tool_name=_string_or_none(function.get("name")) or None,
+        )
+    # A completed turn's "" arguments are not JSON, so from_dict rejects them, as non-streaming generation does.
+    try:
+        message = ChatMessage.from_dict({"role": "assistant", "tool_calls": [entry]})
+    except ValueError:
+        # from_dict's message quotes the raw arguments, so it is dropped rather than chained.
+        raise ToolCallExtractionError(
+            f"{_describe_tool_call(index, tool_call_id)} has malformed arguments",
+            violation_type=ToolViolationType.MALFORMED_ARGUMENTS,
+            index=index,
+            tool_call_id=tool_call_id,
+            tool_name=_string_or_none(function.get("name")),
+        ) from None
+    return cast(list[ToolCall], message.tool_calls)[0]
+
+
+def _parsed_or_error(entry: object, index: int) -> LatestToolCall:
+    """The parsed call, or the error that keeps it from being validated, so one bad call doesn't stop the rest."""
+    try:
+        return _parse_latest_tool_call(entry, index)
+    except ToolCallExtractionError as error:
+        return error
+
+
+def _latest_tool_calls_openai(messages: LLMMessages) -> list[LatestToolCall]:
+    """Strictly parse the last assistant message's tool calls; an unparsable call's error takes its place."""
+    # Only that message is parsed: ChatMessage rejects roles such as the server's "context".
+    message = _latest_assistant_message(messages)
+    if message is None:
+        return []
+    # Checked first: a function_call beside tool_calls would otherwise go unvalidated.
+    if message.get("function_call"):
+        raise _legacy_function_call_error(message["function_call"])
+    raw_calls = message.get("tool_calls")
+    if not raw_calls:
+        return []
+    return [_parsed_or_error(entry, index) for index, entry in enumerate(raw_calls)]
+
+
+def _latest_tool_calls_nim(messages: LLMMessages) -> list[LatestToolCall]:
+    """Parse NIM's latest tool calls. NIM uses the OpenAI Chat Completions shape."""
+    return _latest_tool_calls_openai(messages)
+
+
+_LATEST_TOOL_CALL_EXTRACTORS = {
+    "openai": _latest_tool_calls_openai,
+    "nim": _latest_tool_calls_nim,
+}
+
+
 class ModelEngineError(Exception):
     """Raised when a model engine call fails."""
 
-    def __init__(self, message: str, model_name: str, status: int | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        model_name: str,
+        status: int | None = None,
+        *,
+        inner_exception: BaseException | None = None,
+    ) -> None:
         self.model_name = model_name
         self.status = status
+        # The typed LLMClientError this failure was classified into, when it came from a
+        # provider response. ``nemoguardrails.llm.clients._errors.as_client_error`` reads
+        # this attribute, which is how the server renders the provider's own message, code,
+        # param, and Retry-After instead of falling back to ``str(exception)``.
+        self.inner_exception = inner_exception
         super().__init__(message)
 
     @property
@@ -543,7 +712,7 @@ class ModelEngine(BaseEngine):
         metrics_enabled: bool = False,
         content_capture_enabled: bool = False,
     ) -> None:
-        """Resolve base URL, API key, and retry settings from the model config.
+        """Resolve base URL, API key, retry settings, and per-request defaults from the model config.
 
         The telemetry arguments carry the OTEL instrumentation for every call
         this engine makes.  They live here rather than one level up in
@@ -568,6 +737,8 @@ class ModelEngine(BaseEngine):
         self.default_headers: Mapping[str, str] = MappingProxyType(
             {str(key): str(value) for key, value in (params.get("default_headers") or {}).items()}
         )
+
+        self.default_query: tuple[tuple[str, str], ...] = normalize_query_params(params.get("default_query"))
 
         # Default `llm_params` used on inference are the subset of Model.parameters after
         # filtering out keys in _RESERVED_LLM_PARAMETERS.  Exposed as a read-only
@@ -634,6 +805,10 @@ class ModelEngine(BaseEngine):
                 raise RuntimeError(f"Environment variable '{self.model_config.api_key_env_var}' not set")
             return env_value
 
+        api_key = (self.model_config.parameters or {}).get("api_key")
+        if api_key:
+            return api_key.get_secret_value() if isinstance(api_key, SecretStr) else str(api_key)
+
         if engine == "nim":
             env_value = self._get_environment_variable("NVIDIA_API_KEY")
             return env_value
@@ -651,10 +826,11 @@ class ModelEngine(BaseEngine):
             raise ModelEngineError(
                 f"ModelEngine for '{self.model_name}' has not been started. Call start() first.",
                 model_name=self.model_name,
+                inner_exception=self._generic_client_error(0, "The model engine is not running."),
             )
 
     def _prepare_request(self, messages: LLMMessages, **kwargs: Any) -> _RequestParams:
-        """Build the client, URL, headers, and body common to every request."""
+        """Build the client, URL, headers, query params, and body common to every request."""
         client = cast(RetryClient, self._client)
         url = self.base_url + _CHAT_COMPLETIONS_ENDPOINT
 
@@ -664,13 +840,82 @@ class ModelEngine(BaseEngine):
         headers = merge_headers_case_insensitive(headers, self.default_headers)
 
         body: dict[str, Any] = {"model": self.model_name, "messages": messages, **kwargs}
-        return _RequestParams(client=client, url=url, headers=headers, body=body)
+        return _RequestParams(client=client, url=url, headers=headers, body=body, params=self.default_query)
+
+    @property
+    def _error_context(self) -> ErrorContext:
+        """Identify this engine's model to the shared error classifier."""
+        return ErrorContext(
+            model_name=self.model_name,
+            provider_name=self.provider_name,
+            base_url=self.base_url,
+        )
+
+    def _generic_client_error(self, status_code: int, message: str) -> LLMClientError:
+        """Build a caller-safe client error for a failure the shared classifier cannot type.
+
+        Every ``ModelEngineError`` needs one of these, because ``client_facing_message`` falls
+        back to ``str(exception)`` without it, and this engine's messages name the model.
+        The model context still travels for diagnostics: it reaches logs through
+        ``LLMClientError.__str__``, never the client envelope, which renders
+        ``error_message`` alone.
+        """
+        return LLMClientError(status_code, message, **self._error_context.as_kwargs())
+
+    def _wrap_client_error(self, client_error: LLMClientError, summary: str) -> ModelEngineError:
+        """Carry a classified provider error inside the ``ModelEngineError`` this engine raises.
+
+        The message keeps the model name for the server log; it is the inner error, not this
+        text, that the server renders for the caller, so the raw upstream body is left out
+        rather than concatenated in.
+        """
+        if client_error.status_code > 0:
+            status = client_error.status_code
+        else:
+            status = None
+        return ModelEngineError(
+            f"{summary} from model '{self.model_name}': {client_error.error_message}",
+            model_name=self.model_name,
+            status=status,
+            inner_exception=client_error,
+        )
+
+    def _classify_error_response(self, status: int, body: str, headers: Any, req_id: str) -> LLMClientError | None:
+        """Return the typed provider error for a failed response, or None if it cannot be classified."""
+        try:
+            raise_for_status(status, body, headers, self._error_context)
+        except LLMClientError as client_error:
+            return client_error
+        except Exception:
+            # A classifier failure must not cost the caller the upstream status. Letting this
+            # escape would strip it in ``call``'s catch-all, and the server would report 500
+            # for what was really a 429 or 503, which SDKs retry differently.
+            log.warning(
+                "[%s] could not classify HTTP %s from model '%s'",
+                req_id,
+                status,
+                self.model_name,
+                exc_info=True,
+            )
+        return None
+
+    def _raise_for_sse_error(self, raw_chunk: dict, headers: Any) -> None:
+        """Raise ``ModelEngineError`` for a provider error frame carried inside a stream.
+
+        Mirrors ``BaseClient._check_sse_error``. Anything ``raise_for_sse_error`` raises other
+        than an ``LLMClientError`` still terminates the stream through ``stream_call``'s
+        catch-all, so the frame is never silently dropped.
+        """
+        try:
+            raise_for_sse_error(raw_chunk, headers, self._error_context)
+        except LLMClientError as client_error:
+            raise self._wrap_client_error(client_error, "Stream error") from client_error
 
     async def _raise_for_status(self, response: aiohttp.ClientResponse, req_id: str, t0: float) -> None:
         """Raise ``ModelEngineError`` if the HTTP status indicates an error."""
         if response.status >= 400:
             elapsed_ms = (time.monotonic() - t0) * 1000
-            error_body = await safe_read_body(response)
+            error_body = await safe_read_body(response, max_chars=_ERROR_BODY_MAX_CHARS)
             log.warning(
                 "[%s] HTTP %s from model '%s' time=%.1fms",
                 req_id,
@@ -678,19 +923,47 @@ class ModelEngine(BaseEngine):
                 self.model_name,
                 elapsed_ms,
             )
-            raise ModelEngineError(
-                f"HTTP {response.status} from model '{self.model_name}': {error_body}",
-                model_name=self.model_name,
-                status=response.status,
-            )
+            client_error = self._classify_error_response(response.status, error_body, response.headers, req_id)
+            if client_error is None:
+                # The body is left out deliberately: unclassified is exactly the case where it
+                # could be anything, and it must not reach the caller. The status still does.
+                client_error = self._generic_client_error(response.status, f"HTTP {response.status}")
+            raise self._wrap_client_error(client_error, f"HTTP {response.status}") from client_error
+
+    def _classify_transport_failure(self, exc: Exception) -> LLMClientError | None:
+        """Return the typed client error for a timeout or connection failure, or None for anything else.
+
+        Mirrors the httpx mapping in ``nemoguardrails.llm.clients.base``, so the same
+        transport failure reads the same to a caller whichever engine served the request.
+        No HTTP response arrived, hence status 0. Exception details stay on the cause
+        chain instead of entering the client-facing message.
+        """
+        # Order matters: aiohttp's ServerTimeoutError subclasses ClientConnectionError, so
+        # testing for a connection failure first would report every timeout as one.
+        if isinstance(exc, (asyncio.TimeoutError, aiohttp.ServerTimeoutError)):
+            return LLMTimeoutError(0, "Request timed out.", **self._error_context.as_kwargs())
+        if isinstance(exc, aiohttp.ClientConnectionError):
+            return LLMConnectionError(0, "Connection error.", **self._error_context.as_kwargs())
+        return None
 
     def _wrap_exception(self, exc: Exception, req_id: str, t0: float, label: str = "Request") -> ModelEngineError:
         """Wrap an unexpected exception in a ``ModelEngineError``."""
         elapsed_ms = (time.monotonic() - t0) * 1000
-        log.warning("[%s] %s to model '%s' failed time=%.1fms", req_id, label, self.model_name, elapsed_ms)
+        log.warning(
+            "[%s] %s to model '%s' failed time=%.1fms",
+            req_id,
+            label,
+            self.model_name,
+            elapsed_ms,
+            exc_info=exc,
+        )
+        client_error = self._classify_transport_failure(exc)
+        if client_error is None:
+            client_error = self._generic_client_error(0, f"{label} failed.")
         return ModelEngineError(
-            f"{label} to model '{self.model_name}' failed: {exc}",
+            client_error.error_message,
             model_name=self.model_name,
+            inner_exception=client_error,
         )
 
     async def call(
@@ -722,7 +995,9 @@ class ModelEngine(BaseEngine):
 
         t0 = time.monotonic()
         try:
-            async with req.client.post(req.url, json=req.body, headers=req.headers) as response:
+            async with req.client.post(
+                req.url, json=req.body, headers=req.headers, params=req.params or None
+            ) as response:
                 await self._raise_for_status(response, req_id, t0)
 
                 elapsed_ms = (time.monotonic() - t0) * 1000
@@ -805,7 +1080,9 @@ class ModelEngine(BaseEngine):
 
         t0 = time.monotonic()
         try:
-            async with req.client.post(req.url, json=req.body, headers=req.headers, timeout=stream_timeout) as response:
+            async with req.client.post(
+                req.url, json=req.body, headers=req.headers, params=req.params or None, timeout=stream_timeout
+            ) as response:
                 await self._raise_for_status(response, req_id, t0)
 
                 # Surface response headers on every chunk as provider_metadata['response_headers'],
@@ -846,6 +1123,15 @@ class ModelEngine(BaseEngine):
                     except json.JSONDecodeError:
                         log.warning("[%s] Unparseable SSE chunk: %s", req_id, payload[:200])
                         continue
+
+                    # A provider can report a failure in a frame rather than in the HTTP
+                    # status, and the stream would otherwise end as though generation had
+                    # completed. The value must be non-null, not merely present: a gateway
+                    # that emits "error": null on every frame would otherwise end a healthy
+                    # stream. Only a top-level key counts, so model output that merely looks
+                    # like an error object stays ordinary content.
+                    if isinstance(raw_chunk, dict) and raw_chunk.get("error") is not None:
+                        self._raise_for_sse_error(raw_chunk, response.headers)
 
                     last_chunk_id = raw_chunk.get("id") or last_chunk_id
                     _accumulate_tool_call_delta(tool_calls, raw_chunk)
@@ -923,6 +1209,11 @@ class ModelEngine(BaseEngine):
             raise ModelEngineError(
                 f"Unexpected response format from model '{self.model_name}': {exc}",
                 model_name=self.model_name,
+                inner_exception=LLMResponseValidationError(
+                    f"Unexpected response format from the model: {exc}",
+                    response_data=response,
+                    **self._error_context.as_kwargs(),
+                ),
             ) from exc
 
     async def stream_chat_completion(
@@ -1175,4 +1466,9 @@ class ModelEngine(BaseEngine):
         Completions shape and an engine with no registered extractor falls back to it.
         """
         extractor = _TOOL_EXCHANGE_EXTRACTORS.get(self.model_config.engine, _extract_tool_exchanges_openai)
+        return extractor(messages)
+
+    def extract_latest_tool_calls(self, messages: LLMMessages) -> list[LatestToolCall]:
+        """Strictly parse the last assistant message's tool calls in the wire shape of the model's engine."""
+        extractor = _LATEST_TOOL_CALL_EXTRACTORS.get(self.model_config.engine, _latest_tool_calls_openai)
         return extractor(messages)

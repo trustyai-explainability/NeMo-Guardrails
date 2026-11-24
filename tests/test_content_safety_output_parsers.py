@@ -22,8 +22,11 @@ from nemoguardrails.llm.output_parsers import (
     is_content_safe,
     nemoguard_parse_prompt_safety,
     nemoguard_parse_response_safety,
+    nemotron_content_safety_parse_prompt_safety,
+    nemotron_content_safety_parse_response_safety,
     nemotron_reasoning_parse_prompt_safety,
     nemotron_reasoning_parse_response_safety,
+    parse_tool_safety_verdict,
 )
 
 
@@ -116,6 +119,85 @@ class TestIsContentSafe:
         assert is_safe is False
         assert "S1" in violated_policies
         assert "S8" in violated_policies
+
+
+class TestParseToolSafetyVerdict:
+    """Test the parse_tool_safety_verdict output parser used by tool_safety_check."""
+
+    def test_safe_response(self):
+        assert parse_tool_safety_verdict("safe") == [True]
+
+    def test_unsafe_response_with_no_reason(self):
+        assert parse_tool_safety_verdict("unsafe") == [False]
+
+    def test_unsafe_response_with_single_reason(self):
+        assert parse_tool_safety_verdict("unsafe: leaks credentials") == [False, "leaks credentials"]
+
+    def test_unsafe_response_with_multiple_semicolon_separated_reasons(self):
+        response = "unsafe: leaks credentials; drops a table"
+        assert parse_tool_safety_verdict(response) == [False, "leaks credentials", "drops a table"]
+
+    def test_multiple_reasons_with_extra_whitespace_and_trailing_semicolon(self):
+        response = "unsafe: leaks credentials;   drops a table  ; "
+        assert parse_tool_safety_verdict(response) == [False, "leaks credentials", "drops a table"]
+
+    def test_case_insensitive_parsing(self):
+        assert parse_tool_safety_verdict("UNSAFE: Leaks Credentials") == [False, "Leaks Credentials"]
+
+    def test_response_with_extra_whitespace(self):
+        assert parse_tool_safety_verdict("  safe  ") == [True]
+
+    def test_ambiguous_response_raises(self):
+        with pytest.raises(ValueError, match="Failed to parse a safety verdict"):
+            parse_tool_safety_verdict("I cannot determine this")
+
+    def test_empty_response_raises(self):
+        with pytest.raises(ValueError, match="Failed to parse a safety verdict"):
+            parse_tool_safety_verdict("")
+
+    def test_safe_as_a_substring_does_not_match(self):
+        """ "safety" contains "safe", but the verdict doesn't lead the response."""
+        with pytest.raises(ValueError, match="Failed to parse a safety verdict"):
+            parse_tool_safety_verdict("This violates the safety policy")
+
+    def test_negated_safe_does_not_match(self):
+        """ "safe" as a standalone word, but negated and not leading the response."""
+        with pytest.raises(ValueError, match="Failed to parse a safety verdict"):
+            parse_tool_safety_verdict("This is not safe for public use")
+
+    def test_unsafe_as_a_substring_does_not_match(self):
+        """ "unsafely" contains "unsafe", but the verdict doesn't lead the response."""
+        with pytest.raises(ValueError, match="Failed to parse a safety verdict"):
+            parse_tool_safety_verdict("I am not sure, but this seems unsafely handled")
+
+    def test_trailing_punctuation_still_matches(self):
+        assert parse_tool_safety_verdict("Safe.") == [True]
+
+    @pytest.mark.parametrize(
+        "response",
+        ["Safe to say this call is unsafe: drops a table", "Safe. However the query deletes all rows."],
+    )
+    def test_safe_followed_by_other_words_raises(self, response):
+        with pytest.raises(ValueError, match="Failed to parse a safety verdict"):
+            parse_tool_safety_verdict(response)
+
+    @pytest.mark.parametrize(
+        "response, expected",
+        [("**safe**", [True]), ("**unsafe**: leaks credentials", [False, "leaks credentials"])],
+    )
+    def test_markup_around_the_verdict_is_ignored(self, response, expected):
+        assert parse_tool_safety_verdict(response) == expected
+
+    @pytest.mark.parametrize(
+        "response, expected",
+        [
+            ("unsafe.", [False]),
+            ("unsafe: /etc/passwd contains secrets", [False, "/etc/passwd contains secrets"]),
+            ('unsafe: "DROP TABLE users"', [False, '"DROP TABLE users"']),
+        ],
+    )
+    def test_separator_after_unsafe_is_not_part_of_the_reason(self, response, expected):
+        assert parse_tool_safety_verdict(response) == expected
 
 
 class TestNemoguardParsePromptSafety:
@@ -629,3 +711,212 @@ Response harm: unharmful"""
         response = "Prompt harm: unharmful\nResponse harm: harmful"
         is_safe, *_ = nemotron_reasoning_parse_response_safety(response)
         assert is_safe is False
+
+
+MODEL_SAFE = "User Safety: safe"
+MODEL_UNSAFE = "User Safety: unsafe\nSafety Categories: Criminal Planning/Confessions"
+MODEL_EXCHANGE_ALL_SAFE = "User Safety: safe\nResponse Safety: safe"
+MODEL_EXCHANGE_RESPONSE_UNSAFE = (
+    "User Safety: safe\nResponse Safety: unsafe\nSafety Categories: Violence, Criminal Planning/Confessions"
+)
+MODEL_EXCHANGE_PROMPT_UNSAFE = (
+    "User Safety: unsafe\nResponse Safety: safe\nSafety Categories: Criminal Planning/Confessions, Violence"
+)
+MODEL_EXCHANGE_ALL_UNSAFE = (
+    "User Safety: unsafe\nResponse Safety: unsafe\nSafety Categories: Criminal Planning/Confessions, Violence"
+)
+
+ARSON_CATEGORIES = ["Criminal Planning/Confessions", "Violence"]
+
+MODEL_DUPLICATE_USER_SAFETY = "User Safety: safe\nUser Safety: unsafe\nResponse Safety: safe"
+MODEL_DUPLICATE_RESPONSE_SAFETY = "User Safety: safe\nResponse Safety: safe\nResponse Safety: unsafe"
+MODEL_DUPLICATE_AGREEING_VERDICT = "User Safety: safe\nUser Safety: safe\nResponse Safety: safe"
+MODEL_LEAKED_TRACE_WITH_REVISED_VERDICT = (
+    "We need to decide.\n"
+    "Response Safety: safe\n"
+    "On reflection the assistant supplied arson instructions.\n"
+    "Response Safety: unsafe\n"
+    "User Safety: unsafe"
+)
+
+# A repeat need not start its own line. Every one of these keeps a well-formed line for the other
+# field, so each case is red for the duplicate rather than for a field that is simply missing.
+MODEL_SAME_LINE_DUPLICATE_USER_SAFETY = "User Safety: safe; User Safety: unsafe\nResponse Safety: safe"
+MODEL_SAME_LINE_DUPLICATE_RESPONSE_SAFETY = "User Safety: safe\nResponse Safety: safe; Response Safety: unsafe"
+MODEL_SAME_LINE_DUPLICATE_COMMA_SEPARATED = "User Safety: unsafe, User Safety: safe\nResponse Safety: safe"
+
+# Trailing prose on an otherwise well-formed verdict line is tolerated rather than rejected, so a
+# single stray remark cannot take the rail down. Only a repeated field is treated as a malfunction.
+MODEL_VERDICT_WITH_TRAILING_PROSE = "User Safety: safe (no assistant response present)\nResponse Safety: safe"
+
+# Shaped after a reasoning_content trace captured from the live NIM, which quotes the verdict lines
+# back before restating them as the answer. Stripping has to happen before duplicates are counted.
+MODEL_THINK_TRACE_REPEATING_VERDICTS = (
+    "<think>\n"
+    "We need to output:\n\n"
+    "User Safety: unsafe\n"
+    "Response Safety: safe\n\n"
+    "Thus output exactly:\n\n"
+    "User Safety: unsafe\n"
+    "Response Safety: safe\n\n"
+    "No extra text.\n"
+    "</think>\n"
+    "User Safety: unsafe\nResponse Safety: safe"
+)
+
+
+class TestNemotronContentSafetyParsePromptSafety:
+    """Test the nemotron_content_safety_parse_prompt_safety output parser."""
+
+    @pytest.mark.parametrize(
+        "response,expected_safe,expected_categories",
+        [
+            (MODEL_SAFE, True, []),
+            (MODEL_UNSAFE, False, ["Criminal Planning/Confessions"]),
+            (MODEL_EXCHANGE_ALL_SAFE, True, []),
+            (MODEL_EXCHANGE_RESPONSE_UNSAFE, True, []),
+            (MODEL_EXCHANGE_PROMPT_UNSAFE, False, ARSON_CATEGORIES),
+            (MODEL_EXCHANGE_ALL_UNSAFE, False, ARSON_CATEGORIES),
+        ],
+        ids=[
+            "input_safe",
+            "input_unsafe",
+            "exchange_all_safe",
+            "exchange_response_unsafe",
+            "exchange_prompt_unsafe",
+            "exchange_all_unsafe",
+        ],
+    )
+    def test_captured_model_responses(self, response, expected_safe, expected_categories):
+        """Test every captured model response yields the user-turn verdict and its categories."""
+        is_safe, *violated_policies = nemotron_content_safety_parse_prompt_safety(response)
+        assert is_safe is expected_safe
+        assert sorted(violated_policies) == sorted(expected_categories)
+
+    def test_unsafe_without_categories_line(self):
+        """Test an unsafe verdict under /no_categories parses without raising."""
+        is_safe, *violated_policies = nemotron_content_safety_parse_prompt_safety("User Safety: unsafe")
+        assert is_safe is False
+        assert violated_policies == []
+
+    def test_multiline_think_trace(self):
+        """Test a multi-line reasoning trace preceding the verdict is stripped."""
+        response = "<think>\nThe request seeks instructions for arson.\nThat is unsafe.\n</think>\n\n" + MODEL_UNSAFE
+        is_safe, *violated_policies = nemotron_content_safety_parse_prompt_safety(response)
+        assert is_safe is False
+        assert violated_policies == ["Criminal Planning/Confessions"]
+
+    def test_case_insensitive_parsing(self):
+        """Test parsing is case insensitive."""
+        is_safe, *_ = nemotron_content_safety_parse_prompt_safety("USER SAFETY: UNSAFE")
+        assert is_safe is False
+
+    @pytest.mark.parametrize(
+        "response",
+        ["", "<think>truncated reasoning", '{"User Safety": "safe"}', "User Safety: undetermined"],
+        ids=["empty", "truncated_reasoning", "json", "unknown_verdict"],
+    )
+    def test_invalid_response_raises(self, response):
+        with pytest.raises(ValueError, match="Failed to parse content safety model response"):
+            nemotron_content_safety_parse_prompt_safety(response)
+
+
+class TestNemotronContentSafetyParseResponseSafety:
+    """Test the nemotron_content_safety_parse_response_safety output parser."""
+
+    @pytest.mark.parametrize(
+        "response,expected_safe,expected_categories",
+        [
+            (MODEL_EXCHANGE_ALL_SAFE, True, []),
+            (MODEL_EXCHANGE_RESPONSE_UNSAFE, False, ARSON_CATEGORIES),
+            (MODEL_EXCHANGE_PROMPT_UNSAFE, True, []),
+            (MODEL_EXCHANGE_ALL_UNSAFE, False, ARSON_CATEGORIES),
+        ],
+        ids=[
+            "exchange_all_safe",
+            "exchange_response_unsafe",
+            "exchange_prompt_unsafe",
+            "exchange_all_unsafe",
+        ],
+    )
+    def test_captured_two_turn_responses(self, response, expected_safe, expected_categories):
+        """Test every captured two-turn response yields the assistant-turn verdict and its categories."""
+        is_safe, *violated_policies = nemotron_content_safety_parse_response_safety(response)
+        assert is_safe is expected_safe
+        assert sorted(violated_policies) == sorted(expected_categories)
+
+    @pytest.mark.parametrize("response", [MODEL_SAFE, MODEL_UNSAFE], ids=["input_safe", "input_unsafe"])
+    def test_missing_response_safety_line_raises(self, response):
+        """Test a verdict with no assistant turn raises rather than reusing the user verdict."""
+        with pytest.raises(ValueError, match="Failed to parse content safety model response"):
+            nemotron_content_safety_parse_response_safety(response)
+
+    def test_unsafe_without_categories_line(self):
+        """Test an unsafe verdict under /no_categories parses without raising."""
+        response = "User Safety: safe\nResponse Safety: unsafe"
+        is_safe, *violated_policies = nemotron_content_safety_parse_response_safety(response)
+        assert is_safe is False
+        assert violated_policies == []
+
+    def test_empty_response_raises(self):
+        """Test an empty response raises rather than silently blocking."""
+        with pytest.raises(ValueError, match="Failed to parse content safety model response"):
+            nemotron_content_safety_parse_response_safety("")
+
+
+class TestNemotronContentSafetyDuplicateVerdicts:
+    """A verdict field stated more than once means the model contradicted itself and cannot be trusted."""
+
+    @pytest.mark.parametrize(
+        "parser",
+        [nemotron_content_safety_parse_prompt_safety, nemotron_content_safety_parse_response_safety],
+        ids=["prompt", "response"],
+    )
+    @pytest.mark.parametrize(
+        "response",
+        [
+            MODEL_DUPLICATE_USER_SAFETY,
+            MODEL_DUPLICATE_RESPONSE_SAFETY,
+            MODEL_DUPLICATE_AGREEING_VERDICT,
+            MODEL_LEAKED_TRACE_WITH_REVISED_VERDICT,
+            MODEL_SAME_LINE_DUPLICATE_USER_SAFETY,
+            MODEL_SAME_LINE_DUPLICATE_RESPONSE_SAFETY,
+            MODEL_SAME_LINE_DUPLICATE_COMMA_SEPARATED,
+        ],
+        ids=[
+            "user_safety_twice",
+            "response_safety_twice",
+            "same_verdict_twice",
+            "leaked_trace_revises_verdict",
+            "user_safety_twice_on_one_line",
+            "response_safety_twice_on_one_line",
+            "same_line_comma_separated",
+        ],
+    )
+    def test_duplicate_verdict_field_raises(self, parser, response):
+        """Test either field stated twice raises for both parsers, rather than trusting the first match."""
+        with pytest.raises(ValueError, match="Failed to parse content safety model response"):
+            parser(response)
+
+    @pytest.mark.parametrize(
+        "parser,expected_safe",
+        [
+            (nemotron_content_safety_parse_prompt_safety, False),
+            (nemotron_content_safety_parse_response_safety, True),
+        ],
+        ids=["prompt", "response"],
+    )
+    def test_verdicts_quoted_inside_a_think_trace_are_not_duplicates(self, parser, expected_safe):
+        """Test verdicts repeated inside a stripped reasoning trace do not count toward the duplicate check."""
+        is_safe, *_ = parser(MODEL_THINK_TRACE_REPEATING_VERDICTS)
+        assert is_safe is expected_safe
+
+    @pytest.mark.parametrize(
+        "parser",
+        [nemotron_content_safety_parse_prompt_safety, nemotron_content_safety_parse_response_safety],
+        ids=["prompt", "response"],
+    )
+    def test_trailing_prose_on_a_verdict_line_is_not_a_duplicate(self, parser):
+        """Test a verdict line carrying trailing prose still parses, since the field is stated only once."""
+        is_safe, *_ = parser(MODEL_VERDICT_WITH_TRAILING_PROSE)
+        assert is_safe is True

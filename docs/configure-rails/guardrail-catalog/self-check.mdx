@@ -18,7 +18,7 @@ You should only use the example self-check prompts as a starting point. For prod
 
 ## Reasoning Models as Self-Check LLMs
 
-The `self_check_input`, `self_check_output`, and `self_check_facts` tasks all log a warning if the LLM hits `max_tokens` before producing visible output (`finish_reason="length"` with empty content). With the default parser, `self_check_input` and `self_check_output` treat empty output as unsafe and block. `self_check_facts` explicitly fail-closes by returning a score of `0.0`, because its scoring logic would otherwise accept empty output.
+The `self_check_input`, `self_check_output`, and `self_check_facts` tasks all log a warning if the LLM hits `max_tokens` before producing visible output (`finish_reason="length"` with empty content). With the default parser, `self_check_input` and `self_check_output` treat empty output as unsafe and block. `self_check_facts` returns a blocking `RailOutcome` with an accuracy score of `0.0` in its metadata, because its scoring logic would otherwise accept empty output.
 
 If you use a reasoning model (OpenAI o-series, `gpt-5` and similar) for self-check, set an explicit `max_tokens` on the prompt task in `prompts.yml` large enough to cover both the reasoning trace and the final yes/no verdict:
 
@@ -43,6 +43,19 @@ The performance of this rail is strongly dependent on the capability of the LLM 
 If your LLM does not reliably follow this prompt, consider a purpose-built input safety model instead. See [Content Safety](/configure-guardrails/guardrail-catalog/content-safety) for Nemotron Content Safety, Llama Guard 3, and ShieldGemma alternatives.
 
 </Info>
+
+### Evaluate a Model for Input Self-Check
+
+Evaluate the candidate model with your exact `self_check_input` prompt before choosing it for your application:
+
+1. Prepare labeled inputs that your policy should allow or block. Include normal user requests, policy violations, jailbreak attempts, and ambiguous cases. Include the languages and conversation patterns your application supports.
+2. Run the inputs through a configuration with only `self check input` enabled as an input rail. Keep the prompt, model version, generation parameters, and expected labels fixed so that other input rails do not affect the comparison.
+3. Inspect the [activated rails and LLM call logs](/observability/logging) to confirm that the self-check rail made the decision. The raw verdict must follow the prompt's `yes`/`no` contract: `yes` means block and `no` means allow. Count empty, truncated, or malformed verdicts separately from correct classifications.
+4. Measure the false acceptance rate (inputs that should be blocked but pass) and false rejection rate (inputs that should pass but are blocked). Repeat the cases to identify inconsistent decisions, and compare latency under the same conditions.
+5. Set acceptance criteria for your application before comparing candidate models. Reevaluate after changing the model, prompt, policy, or generation settings.
+
+Use [Evaluate Configuration](/evaluation/evaluate-configuration) to define interactions and expected behavior, then review the results against your labels.
+A general model benchmark does not establish reliability on your application's self-check prompt. If no candidate meets your criteria, evaluate a [purpose-built content safety model](/configure-guardrails/guardrail-catalog/content-safety).
 
 ### Usage
 
@@ -76,13 +89,13 @@ To use the self-check input rail, you should:
 
 The above is an example prompt you can use with the *self check input rail*. See the [Example Prompts](#example-prompts) section below for more details. The `self_check_input` prompt has an input variable `{{ user_input }}` which includes the input from the user. The completion must be "yes" if the input should be blocked and "no" otherwise.
 
-The self-check input rail executes the [`self_check_input` action](https://github.com/NVIDIA-NeMo/Guardrails/tree/develop/nemoguardrails/library/self_check/input_check/actions.py), which returns `True` if the input should be allowed, and `False` otherwise:
+The self-check input rail executes the [`self_check_input` action](https://github.com/NVIDIA-NeMo/Guardrails/tree/develop/nemoguardrails/library/self_check/input_check/actions.py), which returns a [RailOutcome](/configure-guardrails/actions/rail-outcomes). Inspect `is_blocked` to decide whether to refuse the input:
 
 ```text
 define flow self check input
-  $allowed = execute self_check_input
+  $result = execute self_check_input
 
-  if not $allowed
+  if $result.is_blocked
     bot refuse to respond
     stop
 ```
@@ -190,13 +203,13 @@ To use the self-check output rail, you should:
 
 The above is an example prompt you can use with the *self check output rail*. See the [Example Prompts](#example-prompts-1) section below for more details. The `self_check_output` prompt has an input variable `{{ bot_response }}` which includes the output from the bot. The completion must be "yes" if the output should be blocked and "no" otherwise.
 
-The self-check output rail executes the [`self_check_output` action](https://github.com/NVIDIA-NeMo/Guardrails/tree/develop/nemoguardrails/library/self_check/output_check/actions.py), which returns `True` if the output should be allowed, and `False` otherwise:
+The self-check output rail executes the [`self_check_output` action](https://github.com/NVIDIA-NeMo/Guardrails/tree/develop/nemoguardrails/library/self_check/output_check/actions.py), which returns a [RailOutcome](/configure-guardrails/actions/rail-outcomes). Inspect `is_blocked` to decide whether to refuse the output:
 
 ```text
 define flow self check output
-  $allowed = execute self_check_output
+  $result = execute self_check_output
 
-  if not $allowed
+  if $result.is_blocked
     bot refuse to respond
     stop
 ```
@@ -324,7 +337,7 @@ A self-check rail without a `$variant=` parameter uses the default `self_check_i
 
 The diagram below depicts the dialog rails flow in detail:
 
-![Sequence diagram showing the detailed dialog rails flow in NeMo Guardrails: 1) User Intent Generation stage where the system first searches for similar canonical form examples in a vector database, then either uses the closest match if embeddings_only is enabled, or asks the LLM to generate the user's intent. 2) Next Step Prediction stage where the system either uses a matching flow if one exists, or searches for similar flow examples and asks the LLM to generate the next step. 3) Bot Message Generation stage where the system either uses a predefined message if one exists, or searches for similar bot message examples and asks the LLM to generate an appropriate response. The diagram shows all the interactions between the application code, LLM Rails system, vector database, and LLM, with clear branching paths based on configuration options and available predefined content.](../../_static/puml/dialog_rails_flow.png "Sequence diagram showing the detailed dialog rails flow in NeMo Guardrails: 1) User Intent Generation stage where the system first searches for similar canonical form examples in a vector database, then either uses the closest match if embeddings_only is enabled, or asks the LLM to generate the user's intent. 2) Next Step Prediction stage where the system either uses a matching flow if one exists, or searches for similar flow examples and asks the LLM to generate the next step. 3) Bot Message Generation stage where the system either uses a predefined message if one exists, or searches for similar bot message examples and asks the LLM to generate an appropriate response. The diagram shows all the interactions between the application code, LLM Rails system, vector database, and LLM, with clear branching paths based on configuration options and available predefined content.")
+![Sequence diagram showing the detailed dialog rails flow in NeMo Guardrails: 1) User Intent Generation stage where the system first searches for similar canonical form examples in a vector database, then either uses the closest match if embeddings_only is enabled, or asks the LLM to generate the user's intent. 2) Next Step Prediction stage where the system either uses a matching flow if one exists, or searches for similar flow examples and asks the LLM to generate the next step. 3) Bot Message Generation stage where the system either uses a predefined message if one exists, or searches for similar bot message examples and asks the LLM to generate an appropriate response. The diagram shows all the interactions between the application code, LLM Rails system, vector database, and LLM, with clear branching paths based on configuration options and available predefined content.](../../_static/puml/dialog_rails_flow.png)
 
 The dialog rails flow has multiple stages that a user message goes through:
 
@@ -338,4 +351,4 @@ The dialog rails flow has multiple stages that a user message goes through:
 
 When the `single_llm_call.enabled` is set to `True`, the dialog rails flow will be simplified to a single LLM call that predicts all the steps at once. While this helps reduce latency, it may result in lower quality. The diagram below depicts the simplified dialog rails flow:
 
-![Sequence diagram showing the simplified dialog rails flow in NeMo Guardrails when single LLM call is enabled: 1) The system first searches for similar examples in the vector database for canonical forms, flows, and bot messages. 2) A single LLM call is made using the generate_intent_steps_message task prompt to predict the user's canonical form, next step, and bot message all at once. 3) The system then either uses the next step from a matching flow if one exists, or uses the LLM-generated next step. 4) Finally, the system either uses a predefined bot message if available, uses the LLM-generated message if the next step came from the LLM, or makes one additional LLM call to generate the bot message. This simplified flow reduces the number of LLM calls needed to process a user message.](../../_static/puml/single_llm_call_flow.png "Sequence diagram showing the simplified dialog rails flow in NeMo Guardrails when single LLM call is enabled: 1) The system first searches for similar examples in the vector database for canonical forms, flows, and bot messages. 2) A single LLM call is made using the generate_intent_steps_message task prompt to predict the user's canonical form, next step, and bot message all at once. 3) The system then either uses the next step from a matching flow if one exists, or uses the LLM-generated next step. 4) Finally, the system either uses a predefined bot message if available, uses the LLM-generated message if the next step came from the LLM, or makes one additional LLM call to generate the bot message. This simplified flow reduces the number of LLM calls needed to process a user message.")
+![Sequence diagram showing the simplified dialog rails flow in NeMo Guardrails when single LLM call is enabled: 1) The system first searches for similar examples in the vector database for canonical forms, flows, and bot messages. 2) A single LLM call is made using the generate_intent_steps_message task prompt to predict the user's canonical form, next step, and bot message all at once. 3) The system then either uses the next step from a matching flow if one exists, or uses the LLM-generated next step. 4) Finally, the system either uses a predefined bot message if available, uses the LLM-generated message if the next step came from the LLM, or makes one additional LLM call to generate the bot message. This simplified flow reduces the number of LLM calls needed to process a user message.](../../_static/puml/single_llm_call_flow.png)

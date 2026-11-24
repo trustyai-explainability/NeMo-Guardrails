@@ -114,6 +114,36 @@ rails:
       - regex check retrieval
 ```
 
+### Tool Rails
+
+Tool rails check one tool call's arguments, or one tool result's content, against patterns scoped to that specific tool. Configure them under `rails.tool_call.per_tool` (calls) and `rails.tool_result.per_tool` (results), each keyed by tool name, alongside the matching patterns under `rails.config.regex_detection.tool_call`/`tool_result`:
+
+```yaml
+rails:
+  config:
+    regex_detection:
+      tool_call:
+        run_sql:
+          patterns:
+            - "DROP\\s+TABLE"
+      tool_result:
+        run_sql:
+          patterns:
+            - "ssn:\\s*\\d{3}-\\d{2}-\\d{4}"
+  tool_call:
+    per_tool:
+      run_sql:
+        - "regex check tool call $argument=query"
+  tool_result:
+    per_tool:
+      run_sql:
+        - "regex check tool result"
+```
+
+`$argument=query` scopes the tool call check to the call's `query` field only, so other arguments (for example a request ID) never reach the regex, avoiding a false-positive match on unrelated data. Omit `$argument=` to check the call's full argument set. It applies to tool call surfaces only; tool result surfaces have no argument structure to scope and do not accept it.
+
+For the full per-tool surface reference, refer to [Rail Engine Support](/reference/rail-engine-support#tool-call-surfaces).
+
 ## Complete Example
 
 Here's a comprehensive example configuration:
@@ -122,7 +152,7 @@ Here's a comprehensive example configuration:
 models:
   - type: main
     engine: openai
-    model: gpt-4
+    model: gpt-4o
 
 rails:
   config:
@@ -203,3 +233,19 @@ When a regex rail has a regex pattern match, the following steps happen (dependi
 1. Chunks that match any retrieval pattern are **removed** from the retrieval results. Only non-matching chunks are passed to the model as context.
 
 **NOTE:** The matched pattern(s) are available in `result["detections"]` for logging and debugging. They are also logged at `INFO` level by the action.
+
+## Engine Support
+
+| Flow | LLMRails | IORails |
+|---|:---:|:---:|
+| `regex check input` | ✓ | ✓ |
+| `regex check output` | ✓ | ✓ |
+| `regex check retrieval` | ✓ | ✗ |
+| `regex check tool call` | ✗ | ✓ |
+| `regex check tool result` | ✗ | ✓ |
+
+`regex check retrieval` removes matching chunks from the retrieval results, which rewrites `relevant_chunks`.
+`IORails` has no retrieval pipeline and nowhere to apply that rewrite, so the flow runs on `LLMRails` only.
+`regex check tool call`/`regex check tool result` are `IORails`-only capabilities by design, scoped per tool under `rails.tool_call.per_tool`/`rails.tool_result.per_tool`.
+
+For the full per-rail matrix, refer to [Rail Engine Support](/reference/rail-engine-support).

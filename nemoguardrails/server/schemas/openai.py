@@ -19,9 +19,18 @@ import os
 from typing import Annotated, Any, List, Literal, Optional, Union
 
 from openai.types.chat.chat_completion import ChatCompletion
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, ValidationInfo, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    ValidationError,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 
-from nemoguardrails.rails.llm.options import GenerationOptions, RailType
+from nemoguardrails.rails.llm.options import GenerationOptions, RailType, ToolViolation
 
 
 class GuardrailsDataOutput(BaseModel):
@@ -31,7 +40,6 @@ class GuardrailsDataOutput(BaseModel):
         default=None,
         description="The guardrails configuration ID associated with this response.",
     )
-    state: Optional[dict] = Field(default=None, description="State object for continuing the conversation.")
     llm_output: Optional[dict] = Field(default=None, description="Additional LLM output data.")
     output_data: Optional[dict] = Field(default=None, description="Additional output data.")
     log: Optional[dict] = Field(default=None, description="Generation log data.")
@@ -43,14 +51,155 @@ class GuardrailsChatCompletion(ChatCompletion):
     guardrails: Optional[GuardrailsDataOutput] = Field(default=None, description="Guardrails specific output data.")
 
 
-class _OpenAIChatMessageSchema(BaseModel):
-    model_config = ConfigDict(extra="allow")
+class _OpenAIChatMessageBase(BaseModel):
+    model_config = ConfigDict(extra="forbid")
 
-    role: str
+
+class _OpenAIChatMessageRoleSchema(BaseModel):
+    role: Literal["developer", "system", "user", "assistant", "tool", "function", "context"]
+
+
+class _OpenAIPromptCacheBreakpointSchema(_OpenAIChatMessageBase):
+    mode: Literal["explicit"]
+
+
+class _OpenAIImageURLSchema(_OpenAIChatMessageBase):
+    url: str
+    detail: Optional[Literal["auto", "low", "high"]] = None
+
+
+class _OpenAITextContentPartSchema(_OpenAIChatMessageBase):
+    text: str
+    type: Literal["text"]
+    prompt_cache_breakpoint: Optional[_OpenAIPromptCacheBreakpointSchema] = None
+
+
+class _OpenAIImageContentPartSchema(_OpenAIChatMessageBase):
+    image_url: _OpenAIImageURLSchema
+    type: Literal["image_url"]
+    prompt_cache_breakpoint: Optional[_OpenAIPromptCacheBreakpointSchema] = None
+
+
+class _OpenAIFileSchema(_OpenAIChatMessageBase):
+    file_data: Optional[str] = None
+    file_id: Optional[str] = None
+    filename: Optional[str] = None
+
+
+class _OpenAIFileContentPartSchema(_OpenAIChatMessageBase):
+    file: _OpenAIFileSchema
+    type: Literal["file"]
+    prompt_cache_breakpoint: Optional[_OpenAIPromptCacheBreakpointSchema] = None
+
+
+class _OpenAIRefusalContentPartSchema(_OpenAIChatMessageBase):
+    refusal: str
+    type: Literal["refusal"]
+
+
+_OpenAITextContentSchema = Union[str, List[_OpenAITextContentPartSchema]]
+_OpenAIUserContentPartSchema = Union[
+    _OpenAITextContentPartSchema,
+    _OpenAIImageContentPartSchema,
+    _OpenAIFileContentPartSchema,
+]
+
+
+class _OpenAIDeveloperMessageSchema(_OpenAIChatMessageBase):
+    content: _OpenAITextContentSchema
+    role: Literal["developer"]
+    name: Optional[str] = None
+
+
+class _OpenAISystemMessageSchema(_OpenAIChatMessageBase):
+    content: _OpenAITextContentSchema
+    role: Literal["system"]
+    name: Optional[str] = None
+
+
+class _OpenAIUserMessageSchema(_OpenAIChatMessageBase):
+    content: Union[str, List[_OpenAIUserContentPartSchema]]
+    role: Literal["user"]
+    name: Optional[str] = None
+
+
+class _OpenAIFunctionCallSchema(_OpenAIChatMessageBase):
+    arguments: str
+    name: str
+
+
+class _OpenAIFunctionToolCallSchema(_OpenAIChatMessageBase):
+    id: str
+    function: _OpenAIFunctionCallSchema
+    type: Literal["function"]
+
+
+class _OpenAIAssistantMessageSchema(_OpenAIChatMessageBase):
+    role: Literal["assistant"]
+    content: Optional[Union[str, List[Union[_OpenAITextContentPartSchema, _OpenAIRefusalContentPartSchema]]]] = None
+    function_call: Optional[_OpenAIFunctionCallSchema] = None
+    name: Optional[str] = None
+    tool_calls: Optional[List[_OpenAIFunctionToolCallSchema]] = None
+    refusal: Optional[str] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_content_or_call(cls, value: Any) -> Any:
+        if (
+            isinstance(value, dict)
+            and value.get("content") is None
+            and value.get("function_call") is None
+            and not value.get("tool_calls")
+            and value.get("refusal") is None
+        ):
+            raise ValidationError.from_exception_data(
+                cls.__name__,
+                [{"type": "missing", "loc": ("content",), "input": value}],
+            )
+        return value
+
+
+class _OpenAIToolMessageSchema(_OpenAIChatMessageBase):
+    content: _OpenAITextContentSchema
+    role: Literal["tool"]
+    tool_call_id: str
+
+
+class _OpenAIFunctionMessageSchema(_OpenAIChatMessageBase):
+    content: Optional[str]
+    name: str
+    role: Literal["function"]
+
+
+class _GuardrailsContextMessageSchema(_OpenAIChatMessageBase):
+    content: dict[str, Any]
+    role: Literal["context"]
+
+
+_OpenAIChatMessageInput = Union[
+    _OpenAIDeveloperMessageSchema,
+    _OpenAISystemMessageSchema,
+    _OpenAIUserMessageSchema,
+    _OpenAIAssistantMessageSchema,
+    _OpenAIToolMessageSchema,
+    _OpenAIFunctionMessageSchema,
+    _GuardrailsContextMessageSchema,
+]
+
+_OPENAI_CHAT_MESSAGE_SCHEMAS: dict[str, type[BaseModel]] = {
+    "developer": _OpenAIDeveloperMessageSchema,
+    "system": _OpenAISystemMessageSchema,
+    "user": _OpenAIUserMessageSchema,
+    "assistant": _OpenAIAssistantMessageSchema,
+    "tool": _OpenAIToolMessageSchema,
+    "function": _OpenAIFunctionMessageSchema,
+    "context": _GuardrailsContextMessageSchema,
+}
 
 
 def _validate_openai_chat_message(message: Any) -> Any:
-    _OpenAIChatMessageSchema.model_validate(message)
+    role = _OpenAIChatMessageRoleSchema.model_validate(message).role
+    _OPENAI_CHAT_MESSAGE_SCHEMAS[role].model_validate(message)
     return message
 
 
@@ -58,13 +207,44 @@ OpenAIChatMessage = Annotated[
     dict[str, Any],
     BeforeValidator(
         _validate_openai_chat_message,
-        json_schema_input_type=_OpenAIChatMessageSchema,
+        json_schema_input_type=_OpenAIChatMessageInput,
     ),
 ]
 
 
 class OpenAIChatCompletionRequest(BaseModel):
     """Standard OpenAI chat completion request parameters."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_unsupported_custom_tools(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            tools = data.get("tools")
+            if isinstance(tools, list) and any(
+                isinstance(tool, dict) and tool.get("type") == "custom" for tool in tools
+            ):
+                raise ValueError("Custom tools are not supported.")
+
+            tool_choice = data.get("tool_choice")
+            if isinstance(tool_choice, dict):
+                allowed_tools = tool_choice.get("tools")
+                if tool_choice.get("type") == "custom" or (
+                    isinstance(allowed_tools, list)
+                    and any(isinstance(tool, dict) and tool.get("type") == "custom" for tool in allowed_tools)
+                ):
+                    raise ValueError("Custom tools are not supported.")
+        return data
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_unsupported_audio(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            if "modalities" in data and not isinstance(data["modalities"], list):
+                raise ValueError("The 'modalities' parameter must be a list.")
+            modalities = data.get("modalities", [])
+            if "audio" in data or "audio" in modalities:
+                raise ValueError("Audio input and output are not supported.")
+        return data
 
     messages: Optional[List[OpenAIChatMessage]] = Field(
         default=None,
@@ -81,6 +261,10 @@ class OpenAIChatCompletionRequest(BaseModel):
     max_tokens: Optional[int] = Field(
         default=None,
         description="The maximum number of tokens to generate.",
+    )
+    max_completion_tokens: Optional[int] = Field(
+        default=None,
+        description="The maximum number of completion tokens to generate, including reasoning tokens.",
     )
     temperature: Optional[float] = Field(
         default=None,
@@ -154,10 +338,13 @@ class GuardrailsDataInput(BaseModel):
         default_factory=GenerationOptions,
         description="Additional generation options.",
     )
-    state: Optional[dict] = Field(
-        default=None,
-        description="State object to continue the interaction.",
-    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_caller_supplied_state(cls, data: Any) -> Any:
+        if isinstance(data, dict) and data.get("state") is not None:
+            raise ValueError("Caller-supplied state is not accepted over HTTP.")
+        return data
 
     @model_validator(mode="before")
     @classmethod
@@ -206,13 +393,21 @@ class GuardrailCheckDataInput(GuardrailsDataInput):
 
     rail_types: Optional[List[RailType]] = Field(
         default=None,
-        description="Rail types to run. When omitted, auto-detected from message roles.",
+        description="Rail types to run. When omitted, input and output rails are auto-detected from message roles. "
+        "`tool_call` and `tool_result` run only when named, and only on the IORails engine.",
     )
 
 
 class GuardrailCheckRequest(OpenAIChatCompletionRequest):
     """Request body for the /v1/checks endpoint."""
 
+    tools: Optional[list[dict]] = Field(
+        default=None,
+        description="Tools that `tool_call` rails validate calls against: the allowlist and each tool's argument "
+        "schema. Each entry is a Chat Completions function tool, with a `function` object and a non-empty `name`; "
+        "any other entry returns 422. Only the IORails engine runs tool checks; on LLMRails a request with `tools` "
+        "returns 422.",
+    )
     guardrails: GuardrailCheckDataInput = Field(
         default_factory=GuardrailCheckDataInput,
         description="Guardrails specific options for the request.",
@@ -225,3 +420,11 @@ class GuardrailCheckResponse(BaseModel):
     status: str = Field(..., description="Overall check result: passed, modified, or blocked.")
     content: str = Field(..., description="Content after rails processing.")
     rail: Optional[str] = Field(default=None, description="Name of the blocking rail, if any.")
+    reason: Optional[str] = Field(
+        default=None, description="Why the rail blocked the content, if the engine reports it."
+    )
+    tool_violations: Optional[List[ToolViolation]] = Field(
+        default=None,
+        description="The tool calls or tool results a tool rail blocked, each with a `violation_type` to switch on. "
+        "Present only when a tool rail blocked (IORails).",
+    )

@@ -34,7 +34,7 @@ from nemoguardrails.exceptions import LLMCallException
 from nemoguardrails.guardrails.guardrails_types import get_request_id
 from nemoguardrails.guardrails.model_engine import ModelEngineError
 from nemoguardrails.guardrails.telemetry import record_span_error
-from nemoguardrails.llm.clients._errors import _redact_secrets
+from nemoguardrails.llm.clients._errors import _redact_secrets, _sanitize, as_client_error
 
 if TYPE_CHECKING:
     from opentelemetry.trace import Span
@@ -57,9 +57,13 @@ def _upstream_http_status(exc: Exception) -> Optional[int]:
 def _blocked_reason_or_reraise(span: Optional["Span"], action_name: str, exc: Exception) -> str:
     """Record *exc* on *span* and return a redacted block reason, or re-raise on an HTTP status.
 
-    The text is redacted once and that form is what reaches the log on both paths: a provider
-    error can carry a credential in its message (CWE-532). *exc* itself propagates unmodified,
-    so an operator still sees the real text in a traceback.
+    The log keeps the full text, redacted once: a provider error can carry a credential in its
+    message (CWE-532). *exc* itself propagates unmodified, so an operator still sees the real
+    text in a traceback.
+
+    The returned reason is the client-facing form instead, because it reaches API callers
+    through ``client_reason``: the streaming violation payload and a check's ``reason``.
+    See :func:`_client_facing_reason` for what it may carry.
 
     The span error is recorded only on the blocking path. Callers run inside ``action_span``,
     which records anything escaping it, so recording here too would double up.
@@ -77,7 +81,18 @@ def _blocked_reason_or_reraise(span: Optional["Span"], action_name: str, exc: Ex
 
     record_span_error(span, exc)
     log.error("[%s] %s failed: %s", request_id, action_name, detail)
-    return f"{action_name} error: {detail}"
+    return _client_facing_reason(action_name, exc)
+
+
+def _client_facing_reason(action_name: str, exc: Exception) -> str:
+    """The block reason an API caller may see for a rail that raised *exc*."""
+    client_error = as_client_error(exc)
+    if client_error is None:
+        # Any other exception's text is the action's own, and may quote an upstream body or
+        # endpoint that no pattern can reliably scrub, so the caller gets only the rail's name.
+        return f"{action_name} error"
+    # A classified provider error's message was written for callers; scrub it all the same.
+    return f"{action_name} error: {_sanitize(client_error.error_message)}"
 
 
 def rail_error_outcome(span: Optional["Span"], action_name: str, exc: Exception) -> RailOutcome:
@@ -86,7 +101,12 @@ def rail_error_outcome(span: Optional["Span"], action_name: str, exc: Exception)
     Call this from the ``except`` handler of a rail's own ``try`` -- a ``CompiledRail``'s
     or a tool rail's; both speak ``RailOutcome``, so both fail closed the same way.
 
+    The outcome is a ``failure`` rather than a plain ``block``: it stops the turn either way,
+    but an engine reading it can say the rail broke instead of implying the content was
+    refused, which is the difference between "fix your credentials" and "rephrase your
+    question". This is the only place that distinction is recorded.
+
     Raises:
         Exception: *exc* itself, when it carries an upstream HTTP status.
     """
-    return RailOutcome.block(reason=_blocked_reason_or_reraise(span, action_name, exc))
+    return RailOutcome.failure(reason=_blocked_reason_or_reraise(span, action_name, exc))

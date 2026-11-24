@@ -1,0 +1,9 @@
+[allowlist]
+  description = "Global Allowlist"
+
+  regexes = [
+    # Dummy OpenAI key used by the model-engine environment tests.
+    '''^\s*@patch\.dict\("os\.environ", \{"OPENAI_API_KEY": "openai-key-456"\}\)\s*$''',
+    # CEL tests use only a PEM header marker, with no private-key material.
+    '''^\s*(outcome = )?await _check_result\(config, "-----BEGIN RSA PRIVATE KEY-----"\)\s*$''',
+  ]

@@ -8,7 +8,7 @@ repos:
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
     # Ruff version.
-    rev: v0.15.20
+    rev: v0.16.0
     hooks:
       # Run the linter.
       - id: ruff
@@ -25,8 +25,17 @@ repos:
           - --license-filepath
           - LICENSE.md
           - --use-current-year
+      - id: insert-license
+        name: Insert license in Rust files
+        files: \.rs$
+        args:
+          - --license-filepath
+          - LICENSE.md
+          - --comment-style
+          - //
+          - --use-current-year
   - repo: https://github.com/zizmorcore/zizmor-pre-commit
-    rev: v1.26.1
+    rev: v1.28.0
     hooks:
       - id: zizmor
 

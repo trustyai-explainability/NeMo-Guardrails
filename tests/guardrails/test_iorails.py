@@ -26,8 +26,10 @@ from aiohttp.test_utils import TestServer
 from nemoguardrails import Guardrails
 from nemoguardrails.guardrails.guardrails_types import RailDirection, RailResult
 from nemoguardrails.guardrails.iorails import (
+    INTERNAL_ERROR_MESSAGE,
     REFUSAL_MESSAGE,
     IORails,
+    _GeneratedTurn,
     _rewritten_bot_message,
     _rewritten_user_message,
 )
@@ -35,7 +37,14 @@ from nemoguardrails.guardrails.model_engine import ModelEngine
 from nemoguardrails.rails.llm.config import RailsConfig
 from nemoguardrails.rails.llm.options import GenerationOptions, GenerationResponse
 from nemoguardrails.types import LLMResponse, LLMResponseChunk, ToolCall, ToolCallFunction
-from tests.guardrails.rail_stubs import bot_message_rewrite, user_message_rewrite
+from tests.guardrails.rail_stubs import (
+    allow_with_mask_pending,
+    bot_message_rewrite,
+    declare_masking_rails,
+    failed_mask,
+    rail_failure,
+    user_message_rewrite,
+)
 from tests.guardrails.test_data import CONTENT_SAFETY_CONFIG, NEMOGUARDS_CONFIG
 
 
@@ -208,6 +217,68 @@ class TestConfigDefaultHeadersOverHTTP:
         assert "X-Tenant" not in captured["body"]
 
 
+class TestConfigDefaultQueryOverHTTP:
+    """True end-to-end: run generate_async over a real loopback HTTP server and
+    assert on the query string the aiohttp client actually put on the wire."""
+
+    @staticmethod
+    async def _capture_request(default_query: dict) -> dict:
+        """Run one generate_async against a loopback server and return what the server received."""
+        captured: dict = {}
+
+        async def handler(request):
+            captured["path"] = request.path
+            captured["query"] = list(request.rel_url.query.items())
+            captured["body"] = await request.json()
+            return web.json_response({"choices": [{"message": {"role": "assistant", "content": "ok"}}]})
+
+        app = web.Application()
+        app.router.add_post("/v1/chat/completions", handler)
+        server = TestServer(app)
+        await server.start_server()
+        try:
+            config = RailsConfig.from_content(
+                config={
+                    "models": [
+                        {
+                            "type": "main",
+                            "engine": "openai",
+                            "model": "test-model",
+                            "parameters": {
+                                "base_url": str(server.make_url("/")),
+                                "default_query": default_query,
+                            },
+                        }
+                    ]
+                }
+            )
+            with patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}):
+                iorails = IORails(config)
+            async with iorails:
+                captured["result"] = await iorails.generate_async(messages=[{"role": "user", "content": "hi"}])
+        finally:
+            await server.close()
+        return captured
+
+    @pytest.mark.asyncio
+    async def test_config_default_query_sent_on_the_wire(self):
+        """Configured query parameters reach the provider request URL, leaving the path and the JSON body alone."""
+        captured = await self._capture_request({"tenant": "acme-corp", "api-version": "2024-10-21"})
+
+        assert captured["result"] == {"role": "assistant", "content": "ok"}
+        assert captured["query"] == [("tenant", "acme-corp"), ("api-version", "2024-10-21")]
+        assert captured["path"] == "/v1/chat/completions"
+        assert "tenant" not in captured["body"]
+        assert "default_query" not in captured["body"]
+
+    @pytest.mark.asyncio
+    async def test_list_and_bool_query_values_survive_the_wire(self):
+        """A list value repeats the key on the wire and a boolean arrives lowercased."""
+        captured = await self._capture_request({"tag": ["red", "blue"], "beta": True})
+
+        assert captured["query"] == [("tag", "red"), ("tag", "blue"), ("beta", "true")]
+
+
 class TestGenerateAsync:
     """Test the generate_async input-check → LLM → output-check pipeline."""
 
@@ -322,6 +393,76 @@ class TestGenerateAsync:
         record_blocked.assert_called_once_with(RailDirection.OUTPUT)
 
     @pytest.mark.asyncio
+    async def test_failed_input_rail_returns_the_internal_error(self, iorails):
+        """A rail that raised renders the internal error, not the refusal a real block gets."""
+        iorails.rails_manager.is_input_safe = AsyncMock(return_value=rail_failure("f5 guardrails scan input"))
+        iorails.engine_registry.model_call = AsyncMock()
+        iorails.rails_manager.is_output_safe = AsyncMock()
+
+        result = await iorails.generate_async(messages=[{"role": "user", "content": "hi"}])
+
+        assert result == {"role": "assistant", "content": INTERNAL_ERROR_MESSAGE}
+        iorails.engine_registry.model_call.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_failed_input_rail_returns_the_internal_error_with_generation_options(self, iorails):
+        """The structured return shape carries the same sentence as the bare one."""
+        iorails.rails_manager.is_input_safe = AsyncMock(return_value=rail_failure("f5 guardrails scan input"))
+        iorails.engine_registry.model_call = AsyncMock()
+        iorails.rails_manager.is_output_safe = AsyncMock()
+
+        result = await iorails.generate_async(messages=[{"role": "user", "content": "hi"}], options=GenerationOptions())
+
+        assert isinstance(result, GenerationResponse)
+        assert result.response == [{"role": "assistant", "content": INTERNAL_ERROR_MESSAGE}]
+
+    @pytest.mark.asyncio
+    async def test_failed_output_rail_returns_the_internal_error(self, iorails):
+        """An output rail that raised is reported the same way an input one is."""
+        messages = [{"role": "user", "content": "hi"}]
+
+        iorails.rails_manager.is_input_safe = AsyncMock(return_value=RailResult.allow())
+        iorails.engine_registry.model_call = AsyncMock(return_value=LLMResponse(content="an answer"))
+        iorails.rails_manager.is_output_safe = AsyncMock(return_value=rail_failure("f5 guardrails scan output"))
+
+        result = await iorails.generate_async(messages=messages)
+
+        assert result == {"role": "assistant", "content": INTERNAL_ERROR_MESSAGE}
+
+    @pytest.mark.asyncio
+    async def test_failed_tool_result_rail_returns_the_internal_error(self, iorails):
+        """A tool-result rail that raised short-circuits before generation with the internal error."""
+        iorails.rails_manager.are_tool_results_safe = AsyncMock(return_value=rail_failure("tool result validation"))
+        iorails.rails_manager.is_input_safe = AsyncMock()
+        iorails.engine_registry.model_call = AsyncMock()
+
+        result = await iorails.generate_async(messages=[{"role": "user", "content": "hi"}])
+
+        assert result == {"role": "assistant", "content": INTERNAL_ERROR_MESSAGE}
+        iorails.engine_registry.model_call.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_failed_tool_call_rail_returns_the_internal_error(self, iorails):
+        """A tool-call rail that raised discards the model's tool calls with the internal error."""
+        tool_calls = [
+            ToolCall(
+                id="call_1",
+                type="function",
+                function=ToolCallFunction(name="get_weather", arguments={"city": "Paris"}),
+            )
+        ]
+
+        iorails.rails_manager.is_input_safe = AsyncMock(return_value=RailResult.allow())
+        iorails.engine_registry.model_call = AsyncMock(return_value=LLMResponse(content="", tool_calls=tool_calls))
+        iorails.rails_manager.are_tool_calls_safe = AsyncMock(return_value=rail_failure("tool call validation"))
+        iorails.rails_manager.is_output_safe = AsyncMock()
+
+        result = await iorails.generate_async(messages=[{"role": "user", "content": "weather?"}])
+
+        assert result == {"role": "assistant", "content": INTERNAL_ERROR_MESSAGE}
+        iorails.rails_manager.is_output_safe.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_dict_options_forwarded(self, iorails):
         """Dict options are converted to GenerationOptions and forwarded."""
         messages = [{"role": "user", "content": "hi"}]
@@ -334,6 +475,21 @@ class TestGenerateAsync:
         await iorails.generate_async(messages=messages, options={"llm_params": llm_params})
 
         iorails.engine_registry.model_call.assert_called_once_with("main", messages, **llm_params)
+
+    @pytest.mark.asyncio
+    async def test_a_turn_with_neither_a_response_nor_a_verdict_raises(self, iorails):
+        """A generation bug must surface as an error, not as a plausible-looking guardrail block.
+
+        Both generation paths name the blocking verdict on the one branch that drops the
+        response, so this state is unreachable today; the guard is what keeps a future path
+        from reporting a missing response to the caller as a refusal.
+        """
+        messages = [{"role": "user", "content": "hi"}]
+        iorails._speculative_generation = False
+        iorails._do_generate_sequential = AsyncMock(return_value=_GeneratedTurn(response=None, messages=messages))
+
+        with pytest.raises(RuntimeError, match="without naming a blocking rail"):
+            await iorails.generate_async(messages=messages)
 
     @pytest.mark.asyncio
     async def test_generate_async_propagates_exception(self, iorails):
@@ -588,6 +744,10 @@ class TestIORailsStartErrors:
         iorails.engine_registry.stop.assert_called_once()
         assert not iorails._running
 
+        iorails.engine_registry.stop.side_effect = None
+        await iorails.stop()
+        assert iorails.engine_registry.stop.await_count == 2
+
     @pytest.mark.asyncio
     async def test_start_rolls_back_queue_and_registry_when_gauge_registration_raises(self, iorails):
         """If register_nonstream_saturation_gauges raises after the queue is up, BOTH the queue
@@ -678,6 +838,11 @@ class TestIORailsStartErrors:
         iorails.engine_registry.stop.assert_called_once()
         assert not iorails._running
 
+        iorails._generate_async_queue.stop.side_effect = None
+        await iorails.stop()
+        assert iorails._generate_async_queue.stop.await_count == 2
+        iorails.engine_registry.stop.assert_awaited_once()
+
     @pytest.mark.asyncio
     async def test_start_skips_gauge_registration_when_metrics_disabled(self, iorails):
         """With metrics disabled, register_nonstream_saturation_gauges is never called —
@@ -737,8 +902,10 @@ class TestIORailsStopErrors:
         with pytest.raises(RuntimeError, match="stop failed"):
             await iorails.stop()
 
-        # _running should be False due to the finally clause
         assert not iorails._running
+        iorails.engine_registry.stop.side_effect = None
+        await iorails.stop()
+        assert iorails.engine_registry.stop.await_count == 2
 
     @pytest.mark.asyncio
     async def test_stop_runs_engine_registry_when_queue_stop_raises(self, iorails):
@@ -755,6 +922,11 @@ class TestIORailsStopErrors:
 
         iorails.engine_registry.stop.assert_called_once()
         assert not iorails._running
+
+        iorails._generate_async_queue.stop.side_effect = None
+        await iorails.stop()
+        assert iorails._generate_async_queue.stop.await_count == 2
+        iorails.engine_registry.stop.assert_awaited_once()
 
 
 class TestIORailsContextManager:
@@ -937,6 +1109,10 @@ class TestRefusalMessage:
         """REFUSAL_MESSAGE is a non-empty string."""
         assert isinstance(REFUSAL_MESSAGE, str)
         assert len(REFUSAL_MESSAGE) > 0
+
+    def test_the_internal_error_is_not_the_refusal(self):
+        """Aliasing the two would silently undo the distinction the whole fix rests on."""
+        assert INTERNAL_ERROR_MESSAGE != REFUSAL_MESSAGE
 
 
 class TestIORailsConfigToCallURL:
@@ -1195,6 +1371,25 @@ class TestGeneratedTurn:
         assert turn.messages is REWRITE_MESSAGES
         iorails.engine_registry.model_call.assert_not_called()
 
+    async def test_a_blocked_turn_carries_the_verdict_that_blocked_it(self, iorails):
+        """The caller renders the message from this verdict, so a failed rail must survive the hop."""
+        verdict = rail_failure("f5 guardrails scan input")
+        iorails.rails_manager.is_input_safe = AsyncMock(return_value=verdict)
+        iorails.engine_registry.model_call = AsyncMock()
+
+        turn = await iorails._do_generate_sequential(REWRITE_MESSAGES, "req-1", {})
+
+        assert turn.blocked_by is verdict
+
+    async def test_an_unblocked_turn_names_no_blocking_verdict(self, iorails):
+        """Nothing blocked, so there is no verdict for the caller to render a message from."""
+        iorails.rails_manager.is_input_safe = AsyncMock(return_value=RailResult.allow())
+        iorails.engine_registry.model_call = AsyncMock(return_value=LLMResponse(content="sure"))
+
+        turn = await iorails._do_generate_sequential(REWRITE_MESSAGES, "req-1", {})
+
+        assert turn.blocked_by is None
+
 
 @pytest.mark.asyncio
 class TestContentCaptureRecordsWhatTheModelRead:
@@ -1223,3 +1418,111 @@ class TestContentCaptureRecordsWhatTheModelRead:
             await iorails.generate_async(messages=REWRITE_MESSAGES)
 
         assert capture.call_args.args[1] == REWRITE_MESSAGES
+
+
+@pytest.mark.asyncio
+class TestContentCaptureWithholdsWhatNoMaskReached:
+    """With masking rails configured, generation records the text only once every mask guarding it has decided."""
+
+    async def test_a_failed_input_mask_withholds_the_input(self, iorails):
+        """The mask raised, so the user's message is still as sent and the span records no input."""
+        iorails._content_capture_enabled = True
+        declare_masking_rails(iorails, RailDirection.INPUT)
+        iorails.rails_manager.is_input_safe = AsyncMock(return_value=failed_mask("gliner mask pii on input"))
+
+        with patch("nemoguardrails.guardrails.iorails.set_request_content") as capture:
+            await iorails.generate_async(messages=REWRITE_MESSAGES)
+
+        assert capture.call_args.args[1] is None
+
+    async def test_a_tool_result_block_withholds_an_input_no_mask_reached(self, iorails):
+        """Tool-result rails run first, so their block leaves the input mask unrun on the user's message."""
+        iorails._content_capture_enabled = True
+        declare_masking_rails(iorails, RailDirection.INPUT)
+        iorails.rails_manager.are_tool_results_safe = AsyncMock(
+            return_value=RailResult.block(reason="unsafe", triggered_rail="tool result check")
+        )
+
+        with patch("nemoguardrails.guardrails.iorails.set_request_content") as capture:
+            await iorails.generate_async(messages=REWRITE_MESSAGES)
+
+        assert capture.call_args.args[1] is None
+
+    async def test_an_output_mask_turned_off_withholds_the_response(self, iorails):
+        """With the output mask off for the request, the response goes out unmasked and the span records none of it."""
+        iorails._content_capture_enabled = True
+        declare_masking_rails(iorails, RailDirection.OUTPUT)
+        iorails.rails_manager.is_input_safe = AsyncMock(return_value=RailResult.allow())
+        iorails.rails_manager.is_output_safe = AsyncMock(return_value=allow_with_mask_pending())
+        iorails.engine_registry.model_call = AsyncMock(return_value=LLMResponse(content="call me on 555-0100"))
+
+        with patch("nemoguardrails.guardrails.iorails.set_request_content") as capture:
+            await iorails.generate_async(messages=REWRITE_MESSAGES)
+
+        assert capture.call_args.args[2] is None
+
+    async def test_an_output_mask_turned_off_still_records_the_input(self, iorails):
+        """The user's message has no mask to wait on, so a pending output mask leaves the input recorded."""
+        iorails._content_capture_enabled = True
+        declare_masking_rails(iorails, RailDirection.OUTPUT)
+        iorails.rails_manager.is_input_safe = AsyncMock(return_value=RailResult.allow())
+        iorails.rails_manager.is_output_safe = AsyncMock(return_value=allow_with_mask_pending())
+        iorails.engine_registry.model_call = AsyncMock(return_value=LLMResponse(content="call me on 555-0100"))
+
+        with patch("nemoguardrails.guardrails.iorails.set_request_content") as capture:
+            await iorails.generate_async(messages=REWRITE_MESSAGES)
+
+        assert capture.call_args.args[1] == REWRITE_MESSAGES
+
+    async def test_a_response_to_an_unmasked_turn_is_withheld(self, iorails):
+        """The model read the turn the input mask never decided on, so its response may repeat it."""
+        iorails._content_capture_enabled = True
+        declare_masking_rails(iorails, RailDirection.INPUT)
+        iorails.rails_manager.is_input_safe = AsyncMock(return_value=allow_with_mask_pending())
+        iorails.rails_manager.is_output_safe = AsyncMock(return_value=RailResult.allow())
+        iorails.engine_registry.model_call = AsyncMock(return_value=LLMResponse(content="noted, 123-45-6789"))
+
+        with patch("nemoguardrails.guardrails.iorails.set_request_content") as capture:
+            await iorails.generate_async(messages=REWRITE_MESSAGES)
+
+        assert capture.call_args.args[2] is None
+
+    async def test_reasoning_returned_ahead_of_a_masked_answer_is_withheld(self, iorails):
+        """Reasoning rejoins the answer after the output masks ran, so the text returned holds what no mask saw."""
+        iorails._content_capture_enabled = True
+        declare_masking_rails(iorails, RailDirection.OUTPUT)
+        iorails.rails_manager.is_input_safe = AsyncMock(return_value=RailResult.allow())
+        iorails.rails_manager.is_output_safe = AsyncMock(return_value=bot_message_rewrite("call me on <PHONE>"))
+        iorails.engine_registry.model_call = AsyncMock(
+            return_value=LLMResponse(content="call me on 555-0100", reasoning="their number is 555-0100")
+        )
+
+        with patch("nemoguardrails.guardrails.iorails.set_request_content") as capture:
+            await iorails.generate_async(messages=REWRITE_MESSAGES)
+
+        assert capture.call_args.args[2] is None
+
+    async def test_a_structured_response_keeps_its_masked_answer(self, iorails):
+        """The structured return keeps reasoning out of the answer, so the masked answer is still recorded."""
+        iorails._content_capture_enabled = True
+        declare_masking_rails(iorails, RailDirection.OUTPUT)
+        iorails.rails_manager.is_input_safe = AsyncMock(return_value=RailResult.allow())
+        iorails.rails_manager.is_output_safe = AsyncMock(return_value=bot_message_rewrite("call me on <PHONE>"))
+        iorails.engine_registry.model_call = AsyncMock(
+            return_value=LLMResponse(content="call me on 555-0100", reasoning="their number is 555-0100")
+        )
+
+        with patch("nemoguardrails.guardrails.iorails.set_request_content") as capture:
+            await iorails.generate_async(messages=REWRITE_MESSAGES, options={"log": {"activated_rails": True}})
+
+        assert capture.call_args.args[2] == "call me on <PHONE>"
+
+    async def test_a_malformed_message_fails_inside_the_request(self, iorails):
+        """Looking for text to mask must not break a request earlier than the request itself would."""
+        iorails._content_capture_enabled = True
+        declare_masking_rails(iorails, RailDirection.INPUT)
+
+        with patch("nemoguardrails.guardrails.iorails.log") as iorails_log, pytest.raises(AttributeError):
+            await iorails.generate_async(messages=[None])
+
+        assert "generate_async failed" in iorails_log.error.call_args.args[0]

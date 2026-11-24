@@ -16,7 +16,7 @@ on:
       python-version:
         description: "Python version to test against"
         required: true
-        default: "3.10"
+        default: "3.11"
         type: string
       upgrade-deps:
         description: "Whether to install all extras"
@@ -45,12 +45,12 @@ jobs:
     runs-on: ${{ inputs.image }}
 
     steps:
-      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up Python ${{ inputs.python-version }}
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ inputs.python-version }}
 
@@ -89,7 +89,7 @@ jobs:
 
       - name: Upload coverage to Codecov
         if: inputs.with-coverage
-        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
         with:
           directory: ./coverage/reports/
           env_vars: PYTHON

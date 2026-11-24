@@ -105,20 +105,66 @@ To compute the perplexity of a string, the current implementation uses the `gpt2
 
 There is currently one available model-based detection, using a random forest-based detector trained on [`Snowflake/snowflake-arctic-embed-m-long`](https://huggingface.co/Snowflake/snowflake-arctic-embed-m-long) embeddings.
 
-### Detector Availability
+#### Input Length Limit
+
+The `jailbreak detection model` rail accepts up to 2,048 tokens, including special tokens, counted with the Snowflake tokenizer.
+It blocks longer inputs before cache lookup, local inference, or a remote detector request.
+This limit applies to in-process, `server_endpoint`, and NIM-backed model checks.
+The bundled detector server returns HTTP 413 from `/model`, which the rail also treats as a block.
 
 <Warning>
 
-Jailbreak detection fails open.
-When a configured detector cannot be reached, the rail allows the request instead of blocking it.
+This is a breaking behavior change for oversized messages. Earlier versions classified only a truncated prefix and could allow the full message to proceed.
+The model rail now rejects the message. Applications must keep each submitted message within the detector's limit, including special tokens.
 
 </Warning>
 
-A connection failure, a timeout, and an error response all produce the same outcome, for both the heuristics server and the jailbreak detection NIM.
-The rail logs the failure, allows the request, and returns no error to the caller, so a detector outage removes this protection without a visible signal.
-`LLMRails` and `IORails` behave identically here.
+Input validation uses a bundled, revision-pinned tokenizer and runs offline.
+All model checks, including NIM-backed and `server_endpoint` checks, require the `tokenizers` package for this validation.
+The standard installation currently includes it through FastEmbed. If it is missing from your environment, install it before enabling the model rail:
 
-Monitor the availability of your detector if you rely on this rail, and pair it with rails that do not call an external service.
+```bash
+pip install tokenizers
+```
+
+NIM-backed checks need no Torch, Transformers, Hugging Face credentials, or model downloads.
+Configuration loading raises an error with installation instructions if the model rail is enabled and `tokenizers` is missing.
+If the bundled tokenizer cannot be loaded or input coverage cannot be verified at runtime, the rail blocks the request without calling the detector.
+Remote requests are sent unchanged only after they pass validation; the model rail also blocks an HTTP 413 returned by the endpoint.
+
+This client-side limit protects calls made through the NVIDIA NeMo Guardrails library.
+Direct calls to a hosted NIM endpoint depend on that endpoint's own input handling.
+
+### Detector Availability
+
+Jailbreak detection fails closed when a detector cannot complete its check.
+Connection failures, timeouts, non-success responses, and malformed results raise errors instead of returning an allow verdict.
+A valid response must contain a boolean `jailbreak` field.
+Local model and dependency failures also propagate to engine error handling.
+
+`IORails` stops processing with a failed blocking outcome and an internal-error response.
+`LLMRails` uses its action-failure handling to return an internal-error response.
+These failures do not mean the detector classified the input as a jailbreak.
+Applications using check-only APIs must enforce the returned blocked result before continuing.
+Outage failures are not cached as detector verdicts.
+
+HTTP 413 responses from model endpoints and inputs beyond the detector's supported length remain ordinary blocking outcomes, as described above.
+There is no fail-open configuration option for this rail.
+
+### Engine Support
+
+| Flow | LLMRails | IORails |
+|---|:---:|:---:|
+| `jailbreak detection model` | ✓ | ✓ |
+| `jailbreak detection heuristics` | ✓ | ✗ |
+
+`jailbreak detection heuristics` shares a rail manifest with `jailbreak detection model`, and that manifest declares `torch` and `transformers` as optional dependencies.
+`IORails` cannot tell from the manifest alone which of the two flows a configuration is using, and so cannot tell whether those packages are actually required.
+Rather than guess, it refuses the flow, and a configuration that uses it routes to `LLMRails` by default.
+With `require_iorails=True`, `Guardrails` raises `ValueError` instead of falling back.
+This is tracked in [issue #2285](https://github.com/NVIDIA-NeMo/Guardrails/issues/2285).
+
+For the full per-rail matrix, refer to [Rail Engine Support](/reference/rail-engine-support).
 
 ### Setup
 

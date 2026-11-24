@@ -43,7 +43,7 @@ from nemoguardrails.manifests import (
     resolve_import_ref,
 )
 from nemoguardrails.rails.llm.options import GenerationResponse
-from nemoguardrails.types import LLMResponse
+from nemoguardrails.types import LLMResponse, ToolCall, ToolCallFunction
 from tests.llama_guard_fixtures import (
     LLAMA_GUARD_SAFE_POLICY_VIOLATIONS,
     LLAMA_GUARD_UNPARSEABLE_POLICY_VIOLATIONS,
@@ -70,6 +70,8 @@ INJECTION_DETECTION_REFUSAL_PREFIX = (
 )
 USER_INPUT = "hello"
 RELEVANT_CHUNKS = "RELEVANT CHUNKS"
+PROBE_TOOL_NAME = "probe_tool"
+PROBE_TOOL_CALL_ID = "call_1"
 RETRIEVAL_COLANG = """
 define user express greeting
   "hello"
@@ -81,6 +83,13 @@ define flow
 define bot express greeting
   "NORMAL OUTPUT"
 """
+
+
+# LLMRails has no runtime path for these directions (see nemoguardrails/rails/llm/llm_flows.co):
+# tool-result rails bind $tool_message, not $tool_result; tool-call rails never loop per call.
+# A surface here cannot get a FIXTURES entry, so it is excluded from the equivalence check
+# below; its IORails-only coverage lives in IORAILS_ONLY_FIXTURES instead.
+_LLMRAILS_UNSUPPORTED_DIRECTIONS = (RailDirection.TOOL_CALL, RailDirection.TOOL_RESULT)
 
 
 class ObservableOutcome(Enum):
@@ -318,6 +327,56 @@ REGEX_RETRIEVAL = RailSpec(
     interpret=_transform_if_regex_retrieval_match,
 )
 
+REGEX_TOOL_CALL = RailSpec(
+    name="regex_tool_call",
+    flow="regex check tool call",
+    direction="tool_call",
+    action="detect_tool_call_regex_pattern",
+    interpret=_blocked_if_regex_match,
+)
+
+REGEX_TOOL_RESULT = RailSpec(
+    name="regex_tool_result",
+    flow="regex check tool result",
+    direction="tool_result",
+    action="detect_tool_result_regex_pattern",
+    interpret=_blocked_if_regex_match,
+)
+
+TOOL_SAFETY_CHECK_OUTPUT = RailSpec(
+    name="tool_safety_check_tool_call",
+    flow="tool safety check tool call $model=llama_guard $variant=probe",
+    direction="tool_call",
+    action="tool_safety_check_tool_call",
+    model_type="llama_guard",
+    task="tool_safety_check_tool_call $model=llama_guard $variant=probe",
+    output_parser="parse_tool_safety_verdict",
+)
+
+TOOL_SAFETY_CHECK_INPUT = RailSpec(
+    name="tool_safety_check_tool_result",
+    flow="tool safety check tool result $model=llama_guard $variant=probe",
+    direction="tool_result",
+    action="tool_safety_check_tool_result",
+    model_type="llama_guard",
+    task="tool_safety_check_tool_result $model=llama_guard $variant=probe",
+    output_parser="parse_tool_safety_verdict",
+)
+
+CEL_TOOL_CALL = RailSpec(
+    name="cel_tool_call",
+    flow="cel check tool call",
+    direction="tool_call",
+    action="evaluate_tool_call_cel",
+)
+
+CEL_TOOL_RESULT = RailSpec(
+    name="cel_tool_result",
+    flow="cel check tool result",
+    direction="tool_result",
+    action="evaluate_tool_result_cel",
+)
+
 PRIVATEAI_DETECT_INPUT = RailSpec(
     name="privateai_detect_input",
     flow="detect pii on input",
@@ -544,6 +603,14 @@ CONTENT_SAFETY_OUTPUT = RailSpec(
     output_parser="nemoguard_parse_prompt_safety",
 )
 
+LANGUAGE_DETECTOR_INPUT = RailSpec(
+    name="language_detector_input",
+    flow="language detector check input",
+    direction="input",
+    action="language_detector_check_input",
+    rails_config={"language_detector": {"allowed_languages": ["en"]}},
+)
+
 TOPIC_SAFETY_INPUT = RailSpec(
     name="topic_safety_input",
     flow="topic safety check input $model=topic_control",
@@ -710,6 +777,20 @@ F5_OUTPUT = RailSpec(
     flow="f5 guardrails scan output",
     direction="output",
     action="f5_guardrails_scan",
+)
+
+ZSCALER_AIGUARD_INPUT = RailSpec(
+    name="zscaler_aiguard_input",
+    flow="zscaler aiguard moderation on input",
+    direction="input",
+    action="call_zscaler_aiguard_api",
+)
+
+ZSCALER_AIGUARD_OUTPUT = RailSpec(
+    name="zscaler_aiguard_output",
+    flow="zscaler aiguard moderation on output",
+    direction="output",
+    action="call_zscaler_aiguard_api",
 )
 
 ACTIVEFENCE_INPUT = RailSpec(
@@ -1174,13 +1255,14 @@ def _injection_detection_outcome(
     action: str,
     detections: list[str] | None = None,
 ) -> RailOutcome:
+    """Construct the outcome shared by Colang and IORails equivalence cases."""
     metadata = {
         "is_injection": is_injection,
         "text": text,
         "detections": detections or [],
         "action": action,
     }
-    if action == "reject" and is_injection:
+    if is_injection and (action == "reject" or (action == "omit" and text == NORMAL_OUTPUT)):
         return RailOutcome.block(metadata=metadata)
     if text != NORMAL_OUTPUT:
         return RailOutcome.transform([(TransformTarget.BOT_MESSAGE, text)], metadata=metadata)
@@ -2034,6 +2116,19 @@ FIXTURES = [
         expected_content="injection detection normalized output",
     ),
     _case(
+        "injection_detection_omit_blocks_unremoved_injection",
+        INJECTION_DETECTION_OMIT,
+        _injection_detection_outcome(
+            is_injection=True,
+            text=NORMAL_OUTPUT,
+            action="omit",
+            detections=["xss"],
+        ),
+        ObservableOutcome.REFUSAL,
+        FlowDecision.BLOCK,
+        expected_content=f"{INJECTION_DETECTION_REFUSAL_PREFIX}xss.",
+    ),
+    _case(
         "injection_detection_omit_transforms_injection_text",
         INJECTION_DETECTION_OMIT,
         _injection_detection_outcome(
@@ -2204,6 +2299,20 @@ FIXTURES = [
         F5_OUTPUT,
         allow_return=RailOutcome.allow(metadata={"result": {"outcome": "cleared"}}),
         block_return=RailOutcome.block(metadata={"result": {"outcome": "flagged"}}),
+        include_exception_case=True,
+    ),
+    *_rail_outcome_cases(
+        ZSCALER_AIGUARD_INPUT,
+        allow_return=RailOutcome.allow(metadata={"action": "ALLOW"}),
+        block_return=RailOutcome.block(reason="Zscaler AI Guard blocked the user prompt."),
+        block_observable=ObservableOutcome.ANSWER_UNKNOWN,
+        include_exception_case=True,
+    ),
+    *_rail_outcome_cases(
+        ZSCALER_AIGUARD_OUTPUT,
+        allow_return=RailOutcome.allow(metadata={"action": "ALLOW"}),
+        block_return=RailOutcome.block(reason="Zscaler AI Guard blocked the LLM response."),
+        block_observable=ObservableOutcome.ANSWER_UNKNOWN,
         include_exception_case=True,
     ),
     _case(
@@ -2505,6 +2614,12 @@ FIXTURES = [
         include_exception_case=True,
     ),
     *_rail_outcome_cases(
+        LANGUAGE_DETECTOR_INPUT,
+        allow_return=RailOutcome.allow(metadata={"language": "en"}),
+        block_return=RailOutcome.block(metadata={"language": "es", "refusal_message": REFUSAL}),
+        include_exception_case=True,
+    ),
+    *_rail_outcome_cases(
         TOPIC_SAFETY_INPUT,
         include_exception_case=True,
     ),
@@ -2524,7 +2639,12 @@ def _build_config(spec: RailSpec, *, enable_rails_exceptions: bool) -> dict[str,
     if spec.model_type:
         models.append({"type": spec.model_type, "engine": "openai", "model": "placeholder"})
 
-    rails: dict[str, Any] = {spec.direction: {"flows": [spec.flow]}}
+    if spec.direction == "tool_call":
+        rails: dict[str, Any] = {"tool_call": {"per_tool": {PROBE_TOOL_NAME: [spec.flow]}}}
+    elif spec.direction == "tool_result":
+        rails = {"tool_result": {"per_tool": {PROBE_TOOL_NAME: [spec.flow]}}}
+    else:
+        rails = {spec.direction: {"flows": [spec.flow]}}
     if spec.rails_config:
         rails["config"] = spec.rails_config
 
@@ -2657,6 +2777,7 @@ def test_manifest_surfaces_have_flow_gate_equivalence_coverage():
         (surface.direction.value, surface.name)
         for manifest in all_rail_manifests().values()
         for surface in manifest.surfaces
+        if surface.direction not in _LLMRAILS_UNSUPPORTED_DIRECTIONS
     }
     covered = {(case.spec.direction, normalize_configured_surface_name(case.spec.flow)) for case in FIXTURES}
 
@@ -2761,7 +2882,10 @@ def test_colang_2_detailed_moderation_renders_action_verdict(module, flow, actio
             "reject",
             f"{INJECTION_DETECTION_REFUSAL_PREFIX}SQL injection, XSS.",
         ),
-        ("omit", ""),
+        (
+            "omit",
+            f"{INJECTION_DETECTION_REFUSAL_PREFIX}SQL injection, XSS.",
+        ),
     ],
 )
 def test_colang_2_injection_detection_preserves_blocked_verdict(action, expected):
@@ -2811,6 +2935,8 @@ _SURFACE_DIRECTIONS = {
     "input": RailDirection.INPUT,
     "output": RailDirection.OUTPUT,
     "retrieval": RailDirection.RETRIEVAL,
+    "tool_call": RailDirection.TOOL_CALL,
+    "tool_result": RailDirection.TOOL_RESULT,
 }
 
 # IORails always has a main model, and compiles a rail whose manifest names a model type only
@@ -2867,7 +2993,54 @@ def _iorails_case_param(case: FlowEquivalenceCase):
     return pytest.param(case, id=case.case_id, marks=marks)
 
 
-IORAILS_FIXTURES = [case for case in FIXTURES if _is_iorails_enabled(case.spec)]
+IORAILS_ONLY_FIXTURES = [
+    _case(
+        "regex_tool_call_allows_no_match",
+        REGEX_TOOL_CALL,
+        RailOutcome.allow(metadata={"is_match": False, "text": "{}", "detections": [], "source": "tool_call"}),
+        ObservableOutcome.ALLOW,
+        FlowDecision.ALLOW,
+    ),
+    _case(
+        "regex_tool_call_blocks_match",
+        REGEX_TOOL_CALL,
+        RailOutcome.block(
+            metadata={"is_match": True, "text": "secret", "detections": ["secret"], "source": "tool_call"}
+        ),
+        ObservableOutcome.REFUSAL,
+        FlowDecision.BLOCK,
+    ),
+    _case(
+        "regex_tool_result_allows_no_match",
+        REGEX_TOOL_RESULT,
+        RailOutcome.allow(metadata={"is_match": False, "text": "hello", "detections": [], "source": "tool_result"}),
+        ObservableOutcome.ALLOW,
+        FlowDecision.ALLOW,
+    ),
+    _case(
+        "regex_tool_result_blocks_match",
+        REGEX_TOOL_RESULT,
+        RailOutcome.block(
+            metadata={"is_match": True, "text": "secret", "detections": ["secret"], "source": "tool_result"}
+        ),
+        ObservableOutcome.REFUSAL,
+        FlowDecision.BLOCK,
+    ),
+    *_rail_outcome_cases(TOOL_SAFETY_CHECK_OUTPUT),
+    *_rail_outcome_cases(TOOL_SAFETY_CHECK_INPUT),
+    *_rail_outcome_cases(
+        CEL_TOOL_CALL,
+        allow_return=RailOutcome.allow(metadata={"source": "tool_call"}),
+        block_return=RailOutcome.block(metadata={"source": "tool_call", "matched_expressions": ["true"]}),
+    ),
+    *_rail_outcome_cases(
+        CEL_TOOL_RESULT,
+        allow_return=RailOutcome.allow(metadata={"source": "tool_result"}),
+        block_return=RailOutcome.block(metadata={"source": "tool_result", "matched_expressions": ["true"]}),
+    ),
+]
+
+IORAILS_FIXTURES = [case for case in FIXTURES if _is_iorails_enabled(case.spec)] + IORAILS_ONLY_FIXTURES
 LLMRAILS_ONLY_FIXTURES = [case for case in FIXTURES if not _is_iorails_enabled(case.spec)]
 
 
@@ -2908,9 +3081,46 @@ async def _run_flow_iorails(case: FlowEquivalenceCase) -> "_IORailsRun":
         async with iorails:
             for engine in iorails.engine_registry._engines.values():
                 if isinstance(engine, ModelEngine):
-                    engine.chat_completion = AsyncMock(return_value=LLMResponse(content=NORMAL_OUTPUT))
+                    if case.spec.direction == "tool_call":
+                        engine.chat_completion = AsyncMock(
+                            return_value=LLMResponse(
+                                content="",
+                                tool_calls=[
+                                    ToolCall(
+                                        id=PROBE_TOOL_CALL_ID,
+                                        type="function",
+                                        function=ToolCallFunction(name=PROBE_TOOL_NAME, arguments={}),
+                                    )
+                                ],
+                            )
+                        )
+                    else:
+                        engine.chat_completion = AsyncMock(return_value=LLMResponse(content=NORMAL_OUTPUT))
             main_engine = iorails.engine_registry._engines["main"]
-            response = await iorails.generate_async(messages=[{"role": "user", "content": USER_INPUT}])
+            if case.spec.direction == "tool_result":
+                messages = [
+                    {"role": "user", "content": USER_INPUT},
+                    {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": PROBE_TOOL_CALL_ID,
+                                "type": "function",
+                                "function": {"name": PROBE_TOOL_NAME, "arguments": "{}"},
+                            }
+                        ],
+                    },
+                    {
+                        "role": "tool",
+                        "tool_call_id": PROBE_TOOL_CALL_ID,
+                        "name": PROBE_TOOL_NAME,
+                        "content": "probe result",
+                    },
+                ]
+            else:
+                messages = [{"role": "user", "content": USER_INPUT}]
+            response = await iorails.generate_async(messages=messages)
 
     if not isinstance(response, dict):
         raise AssertionError(f"Unexpected IORails response type: {response!r}")
@@ -2943,6 +3153,8 @@ def _iorails_decision(run: _IORailsRun) -> FlowDecision:
     content = run.response.get("content")
     if content == REFUSAL_MESSAGE:
         return FlowDecision.BLOCK
+    if run.response.get("tool_calls"):
+        return FlowDecision.ALLOW
     if content != NORMAL_OUTPUT:
         return FlowDecision.TRANSFORM
     if run.user_message_sent != USER_INPUT:

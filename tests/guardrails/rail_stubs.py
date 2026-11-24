@@ -21,12 +21,13 @@ reads these while deciding how to order and downgrade.
 
 from collections.abc import Mapping
 from contextlib import contextmanager
+from dataclasses import replace
 from typing import Any, Iterator, Optional
 from unittest.mock import patch
 
 from nemoguardrails.actions.rail_outcome import RailOutcome, TransformTarget
 from nemoguardrails.guardrails.compiled_rail import RailExecution
-from nemoguardrails.guardrails.guardrails_types import RailResult
+from nemoguardrails.guardrails.guardrails_types import RailDirection, RailResult
 from nemoguardrails.manifests import RailDirection as SurfaceDirection
 
 
@@ -48,6 +49,10 @@ class StubRail:
         self.seen_bot_response = bot_response
         self.call_count += 1
         return RailExecution(outcome=self.outcome)
+
+    def with_runtime_dependencies(self, deps: Any) -> "StubRail":
+        """Model dependency finalization while retaining this behavior-only test double."""
+        return self
 
     async def close(self) -> None:
         """A compiled rail may own an HTTP client; a stub has nothing to release."""
@@ -73,6 +78,32 @@ def user_message_rewrite(text: str) -> RailResult:
 def bot_message_rewrite(text: str) -> RailResult:
     """The verdict output rails return when they rewrote the response to *text*."""
     return RailResult(RailOutcome.transform([(TransformTarget.BOT_MESSAGE, text)]))
+
+
+def rail_failure(rail: str) -> RailResult:
+    """The verdict the fail-closed envelope returns when *rail* raised instead of deciding."""
+    return RailResult(
+        RailOutcome.failure(reason=f"{rail} error: provider call failed"),
+        triggered_rail=rail,
+    )
+
+
+def failed_mask(rail: str) -> RailResult:
+    """The verdict a masking rail that raised returns: the turn is blocked and its mask never landed."""
+    return replace(rail_failure(rail), rewrite_pending=True)
+
+
+def allow_with_mask_pending() -> RailResult:
+    """The verdict rails return when they let the text through with a configured mask turned off for the request."""
+    return replace(RailResult.allow(), rewrite_pending=True)
+
+
+def declare_masking_rails(engine: Any, *directions: RailDirection) -> None:
+    """Give *engine* rails that may rewrite *directions*, as a masking config does, without compiling one."""
+    engine.rails_manager.transform_flows = {
+        direction: (f"mask pii on {direction.value.lower()}",) if direction in directions else ()
+        for direction in RailDirection
+    }
 
 
 @contextmanager

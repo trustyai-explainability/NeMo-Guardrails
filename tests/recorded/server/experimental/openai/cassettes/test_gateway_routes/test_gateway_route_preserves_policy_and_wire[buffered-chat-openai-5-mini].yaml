@@ -1,0 +1,83 @@
+version: 1
+interactions:
+- request:
+    method: POST
+    uri: https://inference-api.nvidia.com/v1/chat/completions
+    headers:
+      host:
+      - inference-api.nvidia.com
+      accept:
+      - '*/*'
+      connection:
+      - keep-alive
+      user-agent:
+      - python-httpx/0.28.1
+      accept-encoding:
+      - identity
+      content-type:
+      - application/json
+    parsed_body:
+      model: openai/openai/gpt-5-mini
+      stream: false
+      messages:
+      - role: user
+        content: 'Reply with exactly: Hello.'
+      max_completion_tokens: 1024
+      reasoning_effort: low
+  response:
+    status:
+      code: 200
+      message: OK
+    headers:
+      content-type:
+      - application/json
+      content-security-policy:
+      - frame-ancestors 'none'
+    body:
+      parsed_body:
+        id: '[RECORDED_RESPONSE_ID]'
+        created: 0
+        model: openai/openai/gpt-5-mini
+        object: chat.completion
+        choices:
+        - finish_reason: stop
+          index: 0
+          message:
+            content: Hello.
+            role: assistant
+            reasoning_items:
+            - type: reasoning
+              id: rs_0813954d1db3ab29016afae1c4f9e087d1a205a721edaa3116
+              encrypted_content: gAAAAABq-uHFaHz8-icYIlbh0-nmrJujGjtqjWtWUTirsaBMuU8ds_6E7VcdGZ0Im58Uzph8zuHWTVkJeVAh6EKgKZZjRNmCSYh6uAqXgt1IPVRclLirnuWktT8JsbjuRGLotubvanvhbznUdAy0hSe8dCQIv8DQpFcJbrBWMX-p1QWgHctGCdPLRkEWbk-RSm9b8ZhZB62Zv7hxbyMn1VOFS5tis-N5jcTvDXO2e6oM03TBjDhwN_fZZaRlgn4Yk2s1owOWmqDIf-IIiFJkwWfxEnMG-rTMWyKQF0ckX3RsKH6o2D2Y2OdrkEMGC_iniKVSn3QG9AOAJ4zDXU-3kivaA5iHvx46sefhGHJtJrSYSWSXyFnPpDLno4SwM--FikszOPvQ-rnOyvsnfBi_VbTo1ofbtBvxWOHGAaChjqpgu4NGpft2Hm4JoTGOwZW5dxnkcsBMCknM_IbQsymk6QpCJ5yFmrjUgyK7T_0djzFydug3kbycKVwev6vOS3mUHNugNKL7AdkcCmssr40AW0ow_anxE65zdIWATgkl4ZfO4rgAS9TEQV2CPCQuPHDCvoWRA_-b5Y18R-bzon9ZlHt09sol8UwI9aAwWiCMeSWUWWQhmtlUd6qNMo0itusuF4U605m3LAA-zzvP26roFIzlXwcbd6SPQhum4smyYvv0EDgWhQkZvTNcUbi35F3elDNIdGxRuAwB_M5n4iqC_u6WkP_N-eH32p-jMf1dEalknf2CVMZudeXv0XX9IWrhq7q0Otp7Y31fir5kQ--545tuOkGK1kBfN45Tr4QeaX6weG1tev0HvePNGi24lPLA9n8FDvLyDwEgNvQV7y2eNIRn1jeM1bwQiGIsUBD1o2hvFgjZ4t4LjsRcWSnGZd4XBsmxj5Y8kqRu8aWumCre7cgSFKr17fxCAy6AArBTJJ42TtRvBsmkfsCx1s6exkeoJIZehydnhM6f26ue3t8u13MnoGW0yNu7jGNyrIj74p_gjdeg-dmYEXw2UsJP0IWFDXBP3mLz02NH23cvyCY15PbfE809TmqfIt0CNTFG9H7JHQORP-pm6u34BLeulAqDhxf2co8ydN2IHewG7bjVCl9qEww56MjwWBhHM-A9kzzGJcEhmlfoAAtRbOO8HlDO_Pw4YgsPa4D8BiblZpoNztbsEz6RzsAPA6H2OKDdePxIsX0SKdE5lIFrFJD6pBzQDJOtbudWjj2yzrcme3x00A9LeWOHFC9NTY5v3cxWuYe_jSN25giPszgbwhRcP7hYpyXXbxW52bydy4hai7taCCJP3D97yGPj4WEUWLxi5vACiUkkyr4Ag4pqsRsHlb_DSnNZzm2P-2kggdZuq7zYTvvafZPh90kQ4WncT0R2BPkQzsqYhTL_LM_JQY1lcSvVaxXqlhMG99Hu5hXwqVO21XHkxryXgrMzqkkZC5e418qOOrPLQlRoP5J8nv2zsunWxaz4E1YpwvSFcD_6s9Ls-MsDPe0ftPT2I-fmHoMTWgkGLP8Wh_f2a5EzLa3GWHN0aQK9mSHgJxrCweQpb8qokcgPW2iOIXE2BZX46sjNq2Vbo8xadI4C9dclt1BZiumwy0VHgPhjVNVAON4xUAEMSmFAW-7wGb4AP10bTcF39irtJt-dVHrPFQLE_-VE6cOLc3zs0gmT3lfq5IOMIcrm7SNkz7L9bzKOXRAYBnbtiymUzhXMcQmK5DAEltwWoXwPPRPU6grbeo2BAIkKZaCnjopEXJjI4Yw_Z0T092gflbCBp3Kw2zprPPh9jHSsigQnVbnA_BxTipieSPqICi2kQkY4ssMt73IACjCfl4_RoNPy8Mg9ys-c7ai2ujjkiYWMqlRNe86fg2MbVHuTah_kHjE2vOKhclgz8YC5fqrROG9qcD7KrlNPBhlXPStn7dQPQvjfbPSns4kLkdO2KgmFhZBDIi-BBZvNwDR2vSS9iA8pq-3XN0BWhDI42lHRMXrx4wXdEhhb1BTVz5H2MCTOWwO6-CIwAQlmB5Sg-1L3xEfSs3oeAXNkbx5DpFHR8_hKoN_6iDvq3uLqSdrU5TIVmjkoI61-vNODf9glKC9WUJqHLpE-rWMJYeaJpUN6xvyyXg7KFA59_hbXUd3irUXxN1jkOmcxMGpGyqD347e-nGnzVpyaapBnt0KyE3Y-V5b9iB4fJus_VUcepMryLdlHL-a6Ve6xIZoqAoP8WPoOvuS4dD7IaEvE3fs=
+              summary: []
+        usage:
+          completion_tokens: 46
+          prompt_tokens: 12
+          total_tokens: 58
+          completion_tokens_details:
+            reasoning_tokens: 0
+          prompt_tokens_details:
+            cached_tokens: 0
+            cache_write_tokens: 0
+            cache_creation_tokens: 0
+        billing:
+          payer: developer
+        frequency_penalty: 0.0
+        image:
+          context_compression: disabled
+        input_transformations: []
+        presence_penalty: 0.0
+        service_tier: default
+        tool_usage:
+          image_gen:
+            input_tokens: 0
+            input_tokens_details:
+              image_tokens: 0
+              text_tokens: 0
+            output_tokens: 0
+            output_tokens_details:
+              image_tokens: 0
+              text_tokens: 0
+            total_tokens: 0
+          web_search:
+            num_requests: 0

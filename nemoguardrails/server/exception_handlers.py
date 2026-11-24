@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 import logging
 from typing import Dict, Optional, Union
 
@@ -23,11 +24,16 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import JSONResponse, Response
 
 from nemoguardrails.exceptions import (
+    InvalidCheckRequestError,
     InvalidStateError,
     LLMCallException,
     LLMRateLimitError,
+    LLMResponseValidationError,
     RailTypeNotConfiguredError,
+    RailTypeNotSupportedError,
+    StreamingCapacityExceededError,
     StreamingNotSupportedError,
+    ToolConversationTooLongError,
 )
 from nemoguardrails.guardrails.model_engine import ModelEngineError
 from nemoguardrails.http.errors import HTTPClientError, HTTPStatusError
@@ -40,6 +46,11 @@ from nemoguardrails.llm.clients._errors import (
 from nemoguardrails.llm.models.initializer import ModelInitializationError
 
 log = logging.getLogger(__name__)
+
+# How long an overloaded server asks a client to wait before retrying. Long
+# enough that a rejected caller does not immediately add to the overload.
+NONSTREAMING_RETRY_AFTER_SECONDS = 30
+STREAMING_RETRY_AFTER_SECONDS = 30
 
 
 def _error_response(
@@ -88,11 +99,14 @@ def _upstream_status(exc: BaseException) -> Optional[int]:
 
 
 async def llm_call_exception_handler(
-    request: Request, exc: Union[LLMCallException, ModelEngineError, HTTPClientError]
+    request: Request, exc: Union[LLMCallException, ModelEngineError, HTTPClientError, LLMResponseValidationError]
 ) -> Response:
-    """Map LLM and engine call failures to their upstream HTTP status."""
+    """Map provider failures to their HTTP status, or 502 for invalid responses."""
     log.exception(exc)
-    status = normalize_error_status(_upstream_status(exc))
+    if isinstance(as_client_error(exc), LLMResponseValidationError):
+        status = 502
+    else:
+        status = normalize_error_status(_upstream_status(exc))
     message, code, param, headers = _client_error_details(exc)
     return _error_response(status, message, code=code, param=param, headers=headers or None)
 
@@ -119,9 +133,25 @@ async def rail_type_not_configured_error_handler(request: Request, exc: RailType
     return _error_response(422, str(exc))
 
 
+async def rail_type_not_supported_error_handler(request: Request, exc: RailTypeNotSupportedError) -> Response:
+    log.warning("Rail type not supported: %s", exc)
+    return _error_response(422, str(exc))
+
+
+async def invalid_check_request_error_handler(request: Request, exc: InvalidCheckRequestError) -> Response:
+    log.warning("Invalid check request: %s", exc)
+    return _error_response(422, str(exc))
+
+
 async def invalid_state_error_handler(request: Request, exc: InvalidStateError) -> Response:
     log.warning("Invalid state: %s", exc)
     return _error_response(422, str(exc))
+
+
+async def tool_conversation_too_long_error_handler(request: Request, exc: ToolConversationTooLongError) -> Response:
+    """Return the standard 422 error envelope with a messages parameter and stable size-error code."""
+    log.warning("Tool conversation rejected: %s", exc)
+    return _error_response(422, str(exc), code="tool_conversation_too_long", param="messages")
 
 
 async def validation_error_handler(request: Request, exc: RequestValidationError) -> Response:
@@ -162,3 +192,29 @@ async def internal_error_handler(request: Request, exc: Exception) -> Response:
     """Catch-all for unexpected errors."""
     log.exception(exc)
     return _error_response(500, "Internal server error")
+
+
+async def queue_full_error_handler(request: Request, exc: asyncio.QueueFull) -> Response:
+    """Render IORails admission shedding as a retryable overload response."""
+    log.warning("IORails admission queue is full: %s", exc)
+    return _error_response(
+        503,
+        "IORails admission queue is full. Please retry later.",
+        code="queue_full",
+        headers={"retry-after": str(NONSTREAMING_RETRY_AFTER_SECONDS)},
+    )
+
+
+async def streaming_capacity_error_handler(request: Request, exc: StreamingCapacityExceededError) -> Response:
+    """Render IORails streaming capacity shedding as a retryable overload response.
+
+    A full streaming semaphore is a different condition from a full admission
+    queue, so it gets its own message rather than reporting the queue.
+    """
+    log.warning("IORails streaming capacity reached: %s", exc)
+    return _error_response(
+        503,
+        "IORails streaming capacity is reached. Please retry later.",
+        code="streaming_capacity",
+        headers={"retry-after": str(STREAMING_RETRY_AFTER_SECONDS)},
+    )

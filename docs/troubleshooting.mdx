@@ -14,28 +14,123 @@ This page covers common issues you may encounter when configuring, running, or m
 If your issue is not listed here, [open an issue](https://github.com/NVIDIA-NeMo/Guardrails/issues) on GitHub.
 </Warning>
 
+## Tutorial and Model Deployment
+
+### A Hosted NIM Returns an Authentication Error
+
+For a `401` or `403` response, confirm that the key is available to the process running the library and has access to the requested service.
+The built-in `nim` engine uses `NVIDIA_API_KEY` by default. If a model or rail specifies `api_key_env_var`, set the variable named in that configuration instead.
+Restart a notebook kernel, server, or container after changing its environment.
+
+Check the endpoint and model ID against the service's current documentation. A hosted inference key and an NGC registry/model-download key serve different operations; use the permissions required for the operation that failed.
+For local NIM startup errors, inspect the container logs and verify the NGC key's download permissions.
+See [Installation](/get-started/installation-guide) and [Model Configuration](/configure-guardrails/yaml-schema/model-configuration).
+
+### vLLM Does Not Start or the Model Is Not Ready
+
+Inspect the vLLM startup log before sending requests from the library:
+
+- For a CUDA out-of-memory error, check available GPU memory and other processes using the device. Reduce context length or concurrency, or use hardware that supports the selected model and serving configuration.
+- For an import, driver, or CUDA error, use a separate serving environment and follow the [vLLM GPU installation requirements](https://docs.vllm.ai/en/stable/getting_started/installation/gpu/). Match the vLLM, PyTorch, CUDA, and driver versions; do not assume that the library's CPU installation requirements also cover the model server.
+- For a model-download error, verify model access, any required license acceptance, network access, and available cache storage.
+
+After startup completes, query the model server, using the host and port from your deployment:
+
+```bash
+curl --fail http://localhost:8000/v1/models
+```
+
+Use the returned model ID and the server's `/v1` base URL in your model configuration.
+With the default framework in 0.22 and later, use `parameters.base_url`; see [Migrating to 0.22](/reference/0-22#mixed-shape-configs) for legacy parameter names.
+
+### A Safety Model Returns Unexpected Classifications
+
+Confirm that the configuration selects the intended safety model, prompt template, output parser, and token limit.
+Enable [LLM call logging](/observability/logging) to inspect the rendered classification prompt and verdict. Keep these logs private when they contain user content.
+An empty or truncated verdict may be treated as unsafe by the parser; raising the task's `max_tokens` can help when the model needs more tokens to produce its final verdict.
+
+Test labeled safe and unsafe cases, including benign requests that were incorrectly blocked. Compare the safety model's direct response with the decision returned through the configured rail to distinguish model behavior from prompt or parser issues.
+See [Evaluate Configuration](/evaluation/evaluate-configuration) and the [Guardrail Catalog](/configure-guardrails/guardrail-catalog) for the selected rail's prompt and parser requirements.
+
+### A Response Contains Raw Reasoning Tags
+
+A safety classifier may produce a reasoning trace wrapped in `<think>` tags before its verdict. That classifier output is separate from the assistant response returned to the user.
+For the Nemotron Content Safety Reasoning 4B model, use `nemotron_reasoning_parse_prompt_safety` and `nemotron_reasoning_parse_response_safety` with the corresponding input and output tasks.
+These parsers remove complete reasoning blocks before reading the safety verdict; the content safety flows produce the configured refusal when a check blocks.
+
+If reasoning appears in user-visible content, inspect which model produced it and whether the application is returning classifier output or diagnostic logs as the assistant response.
+If the main model itself produces reasoning, check that model and provider's response format separately.
+Report a reproducible case if reasoning still appears in the configured refusal. Disabling reasoning can help isolate the problem, but does not establish that the response-handling issue is fixed.
+
+### GLiNER Model Download Times Out
+
+For the repository's [GLiNER reference server](https://github.com/NVIDIA-NeMo/Guardrails/tree/develop/examples/deployment/gliner_server), model loading happens at startup.
+Inspect the server log for download, model-access, or storage errors, and confirm that the server can reach the model repository.
+Allow the initial download to complete before testing the rail, and preserve the model cache between restarts.
+
+Query `http://localhost:1235/health` and confirm that `status` is `healthy` before sending extraction requests.
+This reference server uses `POST /v1/extract`; a GLiNER NIM uses a different API. Match `rails.config.gliner.server_endpoint` to the server you deployed.
+See [GLiNER Integration](/configure-guardrails/guardrail-catalog/third-party/gliner) for the two endpoint formats and local deployment instructions.
+
 ## Runtime
 
 ### Nested AsyncIO Loop
 
-The NVIDIA NeMo Guardrails library is async-first, so the core functionality is implemented with async functions.
-To provide a blocking API, the library must invoke async functions inside synchronous code with `asyncio.run`.
+The NVIDIA NeMo Guardrails library is async-first. In notebooks, async web servers, and other environments that already run an event loop, use the async APIs:
 
-Python does not allow nested event loops.
-In notebooks, async web servers, and other environments that already run an event loop, nested loop behavior can cause runtime errors or unexpected behavior.
-This issue is being discussed by the Python core team and will likely be supported in the future.
-For more information, refer to [GitHub Issue 66435](https://github.com/python/cpython/issues/66435) and [Pull Request 93338](https://github.com/python/cpython/pull/93338).
+```python
+response = await rails.generate_async(messages=[{"role": "user", "content": "Hello!"}])
+```
 
-The NVIDIA NeMo Guardrails library uses [nest_asyncio](https://github.com/erdewit/nest_asyncio) as a workaround.
-The patching is applied when the `nemoguardrails` package is loaded the first time.
+Use `check_async()` for checks and `generate_events_async()` for Colang event generation.
+The synchronous APIs remain supported outside a running event loop and do not require `nest-asyncio`.
 
-If you do not need the blocking API, or if the `nest_asyncio` patching causes unexpected problems, disable it before loading `nemoguardrails`:
+Starting with 0.25, `nest-asyncio` is an optional dependency. By default, importing `nemoguardrails` does not import it or patch asyncio.
+If you previously enabled automatic patching with `DISABLE_NEST_ASYNCIO=false`, install the compatibility extra:
+
+```console
+$ pip install 'nemoguardrails[nest-asyncio]'
+$ export DISABLE_NEST_ASYNCIO=false
+```
+
+Set the environment variable before importing `nemoguardrails`, then restart the Python process.
+When enabled, the library imports `nest_asyncio` and applies its patch during package initialization.
+This compatibility path emits a `FutureWarning`: automatic patching will be deprecated in 0.26. Migrate to the async APIs.
+The optional compatibility path remains available in 0.26; its removal version will be announced separately.
+
+To disable automatic patching, restore the default before importing the package:
 
 ```console
 $ export DISABLE_NEST_ASYNCIO=True
 ```
 
-Then restart the Python process and retry the application.
+Restart the Python process to discard any patch already applied.
+
+### `LLMRailsRemovalWarning` Says a Feature Will Be Removed
+
+```text
+app.py:4: LLMRailsRemovalWarning: LLMRails is deprecated since NeMo Guardrails 0.25.0 and will be removed no earlier than 0.27.0. Use Guardrails(config), which runs the IORails engine when it supports the config.
+  rails = LLMRails(config)
+```
+
+Your code constructs `LLMRails`, or runs a Colang 2.x configuration.
+Both are deprecated in 0.25.0, and their removal is planned no earlier than 0.27.0.
+The warning is a `DeprecationWarning`, names the feature at the start of the message, and points at the line in your code that triggered it.
+`nemoguardrails chat` prints the Colang 2.x message to standard error instead.
+
+Look up the message in [Migrating to 0.25: Messages You Can Receive](/reference/0-25#messages-you-can-receive) and apply the matching change.
+To hide the warning, or to turn it into an error in your tests, refer to [Silence or Escalate the Warnings](/reference/0-25#silence-or-escalate-the-warnings).
+
+### `UserWarning` Says IORails Ignores Part of the Configuration
+
+```text
+app.py:4: UserWarning: IORails ignores the following in this config (path/to/config): Colang flows (define user, define flow). Guardrails(config, use_iorails=False) runs the LLMRails engine, which uses all of it.
+  rails = Guardrails(config)
+```
+
+`Guardrails` runs the configuration on the IORails engine, which ignores its Colang dialog flows, its custom refusal message, its `config.py`, or several of them.
+The warning describes what the engine does today and carries no removal date.
+For what to move where, refer to [Migrating to 0.25: What IORails Ignores in a Configuration](/reference/0-25#what-iorails-ignores-in-a-configuration).
 
 ## LLM Framework Routing
 
@@ -110,6 +205,13 @@ The library does not log a warning.
 Verify locally with `ConsoleMetricExporter` first.
 Then ensure `set_meter_provider(...)` runs before constructing `Guardrails(config, use_iorails=True, require_iorails=True)` (or `LLMRails(config, require_iorails=True)` when running with `NEMO_GUARDRAILS_IORAILS_ENGINE=1`).
 
+### `nemoguardrails server` Exports No Metrics
+
+The packaged server does not install a `MeterProvider` unless you ask it to.
+Start it with `--metrics-exporter prometheus` (or set `NEMO_GUARDRAILS_SERVER_METRICS_EXPORTER=prometheus`) and scrape `http://<host>:9464/metrics`.
+Only the `guardrails.nonstream.*` admission-queue metrics are exported through this path.
+Refer to [Prometheus and Grafana for the Guardrails Server](/observability/metrics/server-prometheus-grafana).
+
 ### Metrics Dependency Is Missing
 
 If you see the following warning, the `opentelemetry-api` package is not installed:
@@ -132,13 +234,14 @@ Test with `ConsoleMetricExporter` first to confirm IORails engine emission, then
 ### `LLMRails` Produces No Metrics
 
 Metrics are emitted only by the IORails engine.
-Enable it either by setting `NEMO_GUARDRAILS_IORAILS_ENGINE=1` (which redirects `LLMRails(config)` to the IORails engine) or by constructing `Guardrails(config, use_iorails=True)` directly, and use `generate_async` or `stream_async`.
-Pass `require_iorails=True` to make the constructor raise (instead of silently falling back to LLMRails and emitting no metrics) when the config is incompatible with IORails.
+Select IORails by setting `NEMO_GUARDRAILS_IORAILS_ENGINE=1`, which redirects `LLMRails(config)` to IORails, or by constructing `Guardrails(config, use_iorails=True)` directly.
+Use `generate_async()`, `stream_async()`, or `check_async()` to emit metrics.
+Pass `require_iorails=True` to raise when the configuration is incompatible with IORails instead of silently falling back to `LLMRails`, which emits no metrics.
 
-### Synchronous `generate()` Produces No Metrics
+### Synchronous `generate()` or `check()` Produces No Metrics
 
-Telemetry is disabled for the ephemeral engine constructed by the synchronous `generate()` shim.
-Use `generate_async` or `stream_async` for production paths.
+Telemetry is disabled for the ephemeral engine constructed by the synchronous `generate()` and `check()` shims.
+Use `generate_async()`, `stream_async()`, or `check_async()` for production paths.
 
 ### `gen_ai.client.token.usage` Is Missing for Streaming Requests
 

@@ -71,8 +71,21 @@ define bot inform answer unknown
 
 define flow patronus api check output
   $patronus_response = execute PatronusApiCheckOutputAction
-  $evaluation_passed = $patronus_response["pass"]
 
-  if not $evaluation_passed
+  if $patronus_response.is_blocked
     bot inform answer unknown
+    stop
 ```
+
+The action returns a [RailOutcome](/configure-guardrails/actions/rail-outcomes). Read `is_blocked` for the decision; the evaluator's pass/fail result is available in `metadata["pass"]`.
+
+## Engine Support
+
+`patronus api check output` runs on `LLMRails` only.
+
+The rail sends the retrieved context alongside the question and answer.
+It therefore reads `relevant_chunks`, a conversation value that the Colang retrieval pipeline builds and `IORails` does not.
+A configuration that uses this rail routes to `LLMRails` by default.
+With `require_iorails=True`, `Guardrails` raises `ValueError` instead of falling back.
+
+For the full per-rail matrix, refer to [Rail Engine Support](/reference/rail-engine-support).

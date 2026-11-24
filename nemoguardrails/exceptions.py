@@ -12,12 +12,14 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import asyncio
 from typing import Optional, Union
 
 __all__ = [
     "ConfigurationError",
     "InvalidModelConfigurationError",
     "InvalidRailsConfigurationError",
+    "InvalidCheckRequestError",
     "InvalidStateError",
     "LLMCallException",
     "LLMClientError",
@@ -30,8 +32,12 @@ __all__ = [
     "LLMTimeoutError",
     "LLMConnectionError",
     "LLMResponseValidationError",
+    "NonStreamingWorkQueueFullError",
+    "StreamingCapacityExceededError",
     "StreamingNotSupportedError",
     "RailTypeNotConfiguredError",
+    "RailTypeNotSupportedError",
+    "ToolConversationTooLongError",
 ]
 
 
@@ -74,6 +80,18 @@ class RailTypeNotConfiguredError(InvalidRailsConfigurationError):
     pass
 
 
+class RailTypeNotSupportedError(InvalidRailsConfigurationError):
+    """Raised when an explicitly requested rail type cannot run on the serving engine."""
+
+    pass
+
+
+class InvalidCheckRequestError(ValueError):
+    """Raised when a check's arguments contradict each other, such as `tools` without a `tool_call` check."""
+
+    pass
+
+
 class InvalidStateError(ValueError):
     """Raised when a caller-supplied `state` argument is not valid public input.
 
@@ -81,6 +99,49 @@ class InvalidStateError(ValueError):
     (`flow_configs`, `rails_config`, in-flight flow execution) and must not come
     from an untrusted caller. Stateful 2.x execution uses `process_events_async`,
     which keeps a live `State` object in the trusted Python process.
+    """
+
+    pass
+
+
+class ToolConversationTooLongError(ValueError):
+    """Raised when a rendered tool conversation exceeds the general prompt limit.
+
+    Tool exchanges are rejected intact rather than truncated, which could orphan
+    calls or discard the results needed to answer the user. Lengths are measured
+    in serialized characters, with structured inline image payloads discounted.
+    """
+
+    def __init__(self, actual_length: int, max_length: int):
+        """Store the measured and configured lengths without including conversation content."""
+        self.actual_length = actual_length
+        self.max_length = max_length
+        super().__init__(
+            f"Tool conversation length {actual_length} characters exceeds the general prompt max_length of "
+            f"{max_length} characters. Tool calls and results are not truncated. "
+            "Reduce the conversation or tool-result size, or increase the configured max_length "
+            "within your model's context capacity."
+        )
+
+
+class NonStreamingWorkQueueFullError(asyncio.QueueFull):
+    """Raised when the IORails non-streaming admission queue cannot accept more work.
+
+    Subclasses :class:`asyncio.QueueFull` because that is what the underlying
+    work queue raises, so callers already catching it keep working.
+    """
+
+    pass
+
+
+class StreamingCapacityExceededError(Exception):
+    """Raised when IORails has no free streaming slot for a new request.
+
+    The streaming path is bounded by an :class:`asyncio.Semaphore` rather than
+    a queue, so this deliberately does not subclass :class:`asyncio.QueueFull`:
+    nothing is queued and nothing is full. It is a distinct overload condition
+    from :class:`NonStreamingWorkQueueFullError` and carries its own client-facing
+    message.
     """
 
     pass

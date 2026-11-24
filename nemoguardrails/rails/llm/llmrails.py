@@ -24,7 +24,6 @@ import re
 import threading
 import time
 import warnings
-from functools import partial
 from typing import (
     Any,
     AsyncIterator,
@@ -42,6 +41,7 @@ from typing import (
 
 from typing_extensions import Self
 
+from nemoguardrails.actions.actions import ActionResult
 from nemoguardrails.actions.llm.generation import LLMGenerationActions
 from nemoguardrails.actions.llm.utils import (
     extract_bot_thinking_from_events,
@@ -65,6 +65,7 @@ from nemoguardrails.context import (
     raw_llm_request,
     streaming_handler_var,
 )
+from nemoguardrails.deprecation import COLANG_2_ALTERNATIVE, called_from_package, warn_llmrails_removal
 from nemoguardrails.embeddings.index import EmbeddingsIndex
 from nemoguardrails.embeddings.providers import register_embedding_provider
 from nemoguardrails.embeddings.providers.base import EmbeddingModel
@@ -73,6 +74,7 @@ from nemoguardrails.exceptions import (
     InvalidRailsConfigurationError,
     InvalidStateError,
     RailTypeNotConfiguredError,
+    RailTypeNotSupportedError,
     StreamingNotSupportedError,
 )
 from nemoguardrails.header_forwarding import (
@@ -99,6 +101,7 @@ from nemoguardrails.rails.llm.config import (
     RailsConfig,
 )
 from nemoguardrails.rails.llm.options import (
+    TOOL_RAIL_TYPES,
     GenerationLog,
     GenerationOptions,
     GenerationResponse,
@@ -111,7 +114,7 @@ from nemoguardrails.rails.llm.utils import (
     get_history_cache_key,
 )
 from nemoguardrails.streaming import END_OF_STREAM, StreamingHandler
-from nemoguardrails.types import LLMModel
+from nemoguardrails.types import LLMModel, ToolCallChunk, ToolCallDeltaChunk
 from nemoguardrails.utils import (
     get_or_create_event_loop,
     new_event_dict,
@@ -119,6 +122,33 @@ from nemoguardrails.utils import (
 )
 
 log = logging.getLogger(__name__)
+
+# Set on the default and library flows LLMRails appends to its config, so they can be told from the user's own.
+ADDED_BY_LLMRAILS = "_added_by_llmrails"
+
+_PARALLEL_OUTPUT_RAILS_ACTION = "run_output_rails_in_parallel_streaming"
+
+
+def config_py_files(config: RailsConfig) -> List[str]:
+    """Return the config.py of each directory the config was loaded from or imports, each directory once."""
+    config_paths = list(config.imported_paths.values() if config.imported_paths else [])
+    if config.config_path:
+        config_paths.extend(path.strip() for path in config.config_path.split(",") if path.strip())
+
+    filepaths: List[str] = []
+    seen_config_paths = set()
+    for config_path in config_paths:
+        canonical_path = os.path.realpath(config_path)
+        if canonical_path in seen_config_paths:
+            continue
+        seen_config_paths.add(canonical_path)
+        filepath = os.path.join(config_path, "config.py")
+        if os.path.exists(filepath):
+            filepaths.append(filepath)
+    return filepaths
+
+
+_PARALLEL_OUTPUT_RAILS_PARAM = "output rails"
 
 process_events_semaphore = asyncio.Semaphore(1)
 
@@ -281,7 +311,22 @@ class LLMRails(BaseGuardrails):
                 and will take precedence over any main LLM specified in the config.
             verbose: Whether the logging should be verbose or not.
         """
+        # Colang 2.x warns on every route into its runtime; plain LLMRails only when built outside the package.
+        if config.colang_version == "2.x":
+            warn_llmrails_removal("Colang 2.x", COLANG_2_ALTERNATIVE)
+        elif not called_from_package():
+            warn_llmrails_removal(
+                "LLMRails", "Use Guardrails(config), which runs the IORails engine when it supports the config."
+            )
         self.config = config
+        ignored_settings = _iorails_only_tool_settings(config)
+        if ignored_settings:
+            warnings.warn(
+                f"LLMRails ignores {', '.join(ignored_settings)}, which only the IORails engine runs; use Guardrails "
+                "to run them, or set NEMO_GUARDRAILS_IORAILS_ENGINE=true for nemoguardrails server.",
+                UserWarning,
+                stacklevel=2,
+            )
         if llm is not None and not isinstance(llm, LLMModel):
             self.llm = _wrap_legacy_llm(llm)
         else:
@@ -320,6 +365,7 @@ class LLMRails(BaseGuardrails):
             # We mark all the default flows as system flows.
             for flow_config in default_flows:
                 flow_config["is_system_flow"] = True
+                flow_config[ADDED_BY_LLMRAILS] = True
 
             # We add the default flows to the config.
             self.config.flows.extend(default_flows)
@@ -333,6 +379,7 @@ class LLMRails(BaseGuardrails):
                 # We mark all the flows coming from the guardrails library as system flows.
                 for flow_config in content["flows"]:
                     flow_config["is_system_flow"] = True
+                    flow_config[ADDED_BY_LLMRAILS] = True
 
                 # We load all the flows
                 self.config.flows.extend(content["flows"])
@@ -355,19 +402,19 @@ class LLMRails(BaseGuardrails):
                 flow_config["is_subflow"] = True
 
         # We check if the configuration or any of the imported ones have config.py modules.
-        config_modules = []
-        for _path in list(self.config.imported_paths.values() if self.config.imported_paths else []) + [
-            self.config.config_path
-        ]:
-            if _path:
-                filepath = os.path.join(_path, "config.py")
-                if os.path.exists(filepath):
-                    filename = os.path.basename(filepath)
-                    spec = importlib.util.spec_from_file_location(filename, filepath)
-                    if spec and spec.loader:
-                        config_module = importlib.util.module_from_spec(spec)
-                        spec.loader.exec_module(config_module)
-                        config_modules.append(config_module)
+        config_modules: List[Tuple[Any, str]] = []
+        for filepath in config_py_files(self.config):
+            try:
+                filename = os.path.basename(filepath)
+                spec = importlib.util.spec_from_file_location(filename, filepath)
+                if not spec or not spec.loader:
+                    raise ImportError("Could not create a module loader.")
+
+                config_module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(config_module)
+            except Exception as exc:
+                raise RuntimeError(f"Failed to load configuration module at {filepath}.") from exc
+            config_modules.append((config_module, filepath))
 
         colang_version_to_runtime: Dict[str, Type[Runtime]] = {
             "1.0": RuntimeV1_0,
@@ -384,9 +431,12 @@ class LLMRails(BaseGuardrails):
         # If we have a config_modules with an `init` function, we call it.
         # We need to call this here because the `init` might register additional
         # LLM providers.
-        for config_module in config_modules:
+        for config_module, filepath in config_modules:
             if hasattr(config_module, "init"):
-                config_module.init(self)
+                try:
+                    config_module.init(self)
+                except Exception as exc:
+                    raise RuntimeError(f"Failed to initialize configuration module at {filepath}.") from exc
 
         # If we have a customized embedding model, we'll use it.
         for model in self.config.models:
@@ -761,6 +811,10 @@ class LLMRails(BaseGuardrails):
                 cache_key = get_history_cache_key(messages[0:p])
                 if cache_key in self.events_history_cache:
                     events = self.events_history_cache[cache_key].copy()
+                    request_context = {"generation_options": None}
+                    if messages[0]["role"] == "context":
+                        request_context["generation_options"] = messages[0]["content"].get("generation_options")
+                    events.append({"type": "ContextUpdate", "data": request_context})
                     break
 
                 p -= 1
@@ -807,10 +861,11 @@ class LLMRails(BaseGuardrails):
                     events.append({"type": "ContextUpdate", "data": msg["content"]})
                 elif msg["role"] == "event":
                     events.append(msg["event"])
-                elif msg["role"] == "system":
+                elif msg["role"] in ("developer", "system"):
                     # Handle system messages - convert them to SystemMessage events
                     events.append({"type": "SystemMessage", "content": msg["content"]})
                 elif msg["role"] == "tool":
+                    events.append({"type": "ToolMessage", "message": msg.copy()})
                     # For the last tool message, create grouped tool event and synthetic UserMessage
                     if idx == len(messages) - 1:
                         # Find the original user message for response generation
@@ -820,32 +875,40 @@ class LLMRails(BaseGuardrails):
                                 user_message = prev_msg["content"]
                                 break
 
-                        # If tool input rails are configured, process tool messages even without user message
-                        # This allows standalone tool message validation (e.g., in MCP gateway scenarios)
-                        if user_message or self.config.rails.tool_input.flows:
-                            # If tool input rails are configured, group all tool messages
-                            if self.config.rails.tool_input.flows:
-                                # Collect all tool messages for grouped processing
-                                tool_messages = []
-                                for tool_idx in range(len(messages)):
-                                    if messages[tool_idx]["role"] == "tool":
-                                        tool_messages.append(
-                                            {
-                                                "content": messages[tool_idx]["content"],
-                                                "name": messages[tool_idx].get("name", "unknown"),
-                                                "tool_call_id": messages[tool_idx].get("tool_call_id", ""),
-                                            }
-                                        )
-
+                        # Allow standalone tool-result checks without a preceding user message.
+                        if user_message is not None or self.config.rails.tool_result.flows:
+                            if self.config.rails.tool_result.flows:
+                                # Do not rerun result rails for earlier batches in the supplied history.
+                                batch_start = idx
+                                while batch_start > 0 and messages[batch_start - 1]["role"] == "tool":
+                                    batch_start -= 1
+                                tool_names = {
+                                    call.get("id", ""): call.get("function", {}).get(
+                                        "name", call.get("name", "unknown")
+                                    )
+                                    for previous in messages[:batch_start]
+                                    if previous["role"] == "assistant"
+                                    for call in previous.get("tool_calls", [])
+                                }
+                                tool_messages = [
+                                    {
+                                        "content": tool_message["content"],
+                                        "name": tool_message.get("name")
+                                        or tool_names.get(tool_message.get("tool_call_id", ""), "unknown"),
+                                        "tool_call_id": tool_message.get("tool_call_id", ""),
+                                    }
+                                    for tool_message in messages[batch_start:]
+                                ]
                                 events.append(
                                     {
                                         "type": "UserToolMessages",
                                         "tool_messages": tool_messages,
+                                        "user_message": user_message,
                                     }
                                 )
 
                             else:
-                                events.append({"type": "UserMessage", "text": user_message})
+                                events.append({"type": "UserMessage", "text": user_message, "is_tool_result": True})
 
         else:
             for idx in range(len(messages)):
@@ -866,7 +929,7 @@ class LLMRails(BaseGuardrails):
                     events.append({"type": "ContextUpdate", "data": msg["content"]})
                 elif msg["role"] == "event":
                     events.append(msg["event"])
-                elif msg["role"] == "system":
+                elif msg["role"] in ("developer", "system"):
                     # Handle system messages - convert them to SystemMessage events
                     events.append({"type": "SystemMessage", "content": msg["content"]})
                 elif msg["role"] == "tool":
@@ -1004,6 +1067,11 @@ class LLMRails(BaseGuardrails):
             log.warning("No main LLM specified in the config and no LLM provided via constructor.")
 
         if streaming_handler:
+            tool_call_rails_enabled = self.config.rails.tool_call.flows and (
+                gen_options is None or gen_options.rails.tool_call
+            )
+            if self.config.rails.output.flows or tool_call_rails_enabled:
+                streaming_handler.allow_tool_calls = False
             streaming_handler_var.set(streaming_handler)
 
         # Initialize the object with additional explanation information.
@@ -1026,7 +1094,7 @@ class LLMRails(BaseGuardrails):
         # we move that to the `$bot_message` variable. This is to enable a more
         # convenient interface for text output rails. Tool-call assistant messages
         # must remain in the history so they can be converted into BotToolCalls
-        # events and evaluated by tool output rails.
+        # events and evaluated by tool call rails.
         if (
             messages
             and messages[-1]["role"] == "assistant"
@@ -1156,17 +1224,29 @@ class LLMRails(BaseGuardrails):
         if response_events:
             new_message["events"] = response_events
 
+        tool_calls = extract_tool_calls_from_events(new_events)
+
         if self.config.colang_version == "1.0":
+            history_events = (
+                events
+                + [
+                    {**event, "tool_calls": tool_calls} if event["type"] == "BotToolCalls" else event
+                    for event in new_events
+                    if event["type"] != "BotToolCalls" or tool_calls
+                ]
+                + new_extra_events
+            )
             events.extend(new_events)
             events.extend(new_extra_events)
 
             # If a state object is not used, then we use the implicit caching
             if state is None:
                 # Save the new events in the history and update the cache
-                cache_key = get_history_cache_key((messages) + [new_message])  # type: ignore
-                self.events_history_cache[cache_key] = events
+                cache_message = {**new_message, "tool_calls": tool_calls} if tool_calls else new_message
+                cache_key = get_history_cache_key((messages) + [cache_message])  # type: ignore
+                self.events_history_cache[cache_key] = history_events
             else:
-                output_state = {"events": events}
+                output_state = {"events": history_events}
 
         # If logging is enabled, we log the conversation
         # TODO: add support for logging flag
@@ -1204,7 +1284,6 @@ class LLMRails(BaseGuardrails):
                 gen_options.log.llm_calls = True
                 gen_options.log.internal_events = True
 
-        tool_calls = extract_tool_calls_from_events(new_events)
         llm_metadata = get_and_clear_response_metadata_contextvar()
         reasoning_content = extract_bot_thinking_from_events(new_events)
         # If we have generation options, we prepare a GenerationResponse instance.
@@ -1363,6 +1442,25 @@ class LLMRails(BaseGuardrails):
                 "generate_async() instead of stream_async()."
             )
 
+    def _resolve_streaming_output_rail_actions(self) -> List[Tuple[str, Tuple[str, Any]]]:
+        """Pair each configured output rail flow, in order, with the action streaming calls on every chunk."""
+        if not self.config.rails.output.streaming or not self.config.rails.output.streaming.enabled:
+            return []
+        # A list, not a dict: sequential mode runs a flow listed twice twice, as generate_async() does.
+        output_rail_actions = []
+        for flow_id in self.config.rails.output.flows:
+            try:
+                output_rail_actions.append((flow_id, get_action_details_from_flow_id(flow_id, self.config.flows)))
+            except ValueError as e:
+                raise StreamingNotSupportedError(
+                    f"stream_async() cannot run the output rail flow `{flow_id}`. Output rail streaming "
+                    "calls the first `execute` action in the body of each Colang 1.0 output rail flow on "
+                    "every chunk, and this flow has none, for example because it delegates its check to a "
+                    "subflow. Call the check with `execute` in the flow itself, or use generate_async() "
+                    "instead of stream_async()."
+                ) from e
+        return output_rail_actions
+
     @overload
     def stream_async(
         self,
@@ -1371,9 +1469,9 @@ class LLMRails(BaseGuardrails):
         options: Optional[Union[dict, GenerationOptions]] = None,
         state: Optional[Union[dict, State]] = None,
         include_metadata: Literal[False] = False,
-        generator: Optional[AsyncIterator[str]] = None,
+        generator: Optional[AsyncIterator[Union[str, ToolCallChunk, ToolCallDeltaChunk]]] = None,
         include_generation_metadata: Optional[bool] = None,
-    ) -> AsyncIterator[str]: ...
+    ) -> AsyncIterator[Union[str, ToolCallChunk, ToolCallDeltaChunk]]: ...
 
     @overload
     def stream_async(
@@ -1383,9 +1481,9 @@ class LLMRails(BaseGuardrails):
         options: Optional[Union[dict, GenerationOptions]] = None,
         state: Optional[Union[dict, State]] = None,
         include_metadata: Literal[True] = ...,
-        generator: Optional[AsyncIterator[str]] = None,
+        generator: Optional[AsyncIterator[Union[str, ToolCallChunk, ToolCallDeltaChunk]]] = None,
         include_generation_metadata: Optional[bool] = None,
-    ) -> AsyncIterator[Union[str, dict]]: ...
+    ) -> AsyncIterator[Union[str, dict, ToolCallChunk, ToolCallDeltaChunk]]: ...
 
     def stream_async(
         self,
@@ -1394,9 +1492,9 @@ class LLMRails(BaseGuardrails):
         options: Optional[Union[dict, GenerationOptions]] = None,
         state: Optional[Union[dict, State]] = None,
         include_metadata: Optional[bool] = False,
-        generator: Optional[AsyncIterator[str]] = None,
+        generator: Optional[AsyncIterator[Union[str, ToolCallChunk, ToolCallDeltaChunk]]] = None,
         include_generation_metadata: Optional[bool] = None,
-    ) -> AsyncIterator[Union[str, dict]]:
+    ) -> AsyncIterator[Union[str, dict, ToolCallChunk, ToolCallDeltaChunk]]:
         """Simplified interface for getting directly the streamed tokens from the LLM."""
 
         if include_generation_metadata is not None:
@@ -1409,6 +1507,7 @@ class LLMRails(BaseGuardrails):
             include_metadata = include_generation_metadata
 
         self._validate_streaming_with_output_rails()
+        output_rail_actions = self._resolve_streaming_output_rail_actions()
         self._validate_public_state(state)
         # if an external generator is provided, use it directly
         if generator:
@@ -1416,6 +1515,7 @@ class LLMRails(BaseGuardrails):
                 return self._run_output_rails_in_streaming(
                     streaming_handler=generator,
                     output_rails_streaming_config=self.config.rails.output.streaming,
+                    output_rail_actions=output_rail_actions,
                     messages=messages,
                     prompt=prompt,
                 )
@@ -1464,6 +1564,7 @@ class LLMRails(BaseGuardrails):
             base_iterator = self._run_output_rails_in_streaming(
                 streaming_handler=streaming_handler,
                 output_rails_streaming_config=self.config.rails.output.streaming,
+                output_rail_actions=output_rail_actions,
                 messages=messages,
                 prompt=prompt,
             )
@@ -1475,7 +1576,11 @@ class LLMRails(BaseGuardrails):
                 async for chunk in base_iterator:
                     if chunk is not None:
                         yield chunk
-            finally:
+            except BaseException:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+                raise
+            else:
                 await task
 
         return wrapped_iterator()
@@ -1621,6 +1726,8 @@ class LLMRails(BaseGuardrails):
         self,
         messages: List[dict],
         rail_types: Optional[List[RailType]] = None,
+        *,
+        tools: Optional[List[dict]] = None,
     ) -> RailsResult:
         """Run rails on messages based on their content (asynchronous).
 
@@ -1641,6 +1748,8 @@ class LLMRails(BaseGuardrails):
             rail_types: Optional list of rail types to run, e.g.
                   ``[RailType.INPUT]`` or ``[RailType.OUTPUT]``.
                   When provided, overrides automatic detection.
+            tools: Not supported. Only a tool-call check reads tools, and
+                  only the IORails engine runs one.
 
         Returns:
             RailsResult containing:
@@ -1667,10 +1776,15 @@ class LLMRails(BaseGuardrails):
                 result = await rails.check_async(messages, rail_types=[RailType.INPUT])
 
         Raises:
+            RailTypeNotSupportedError: If ``tools`` is given, or a requested rail
+                type is ``tool_call`` or ``tool_result``, which only the IORails
+                engine runs.
             RailTypeNotConfiguredError: If a requested rail type has no
                 configured flows.
         """
+        _reject_tools(tools)
         if rail_types is not None:
+            _reject_tool_rail_types(rail_types)
             for rt in rail_types:
                 if not getattr(self.config.rails, rt.value).flows:
                     raise RailTypeNotConfiguredError(f"Requested rail type '{rt.value}' has no configured rails.")
@@ -1687,6 +1801,9 @@ class LLMRails(BaseGuardrails):
             original_content = _get_last_content_by_role(messages, "assistant")
         else:
             original_content = _get_last_content_by_role(messages, "user")
+        if isinstance(original_content, list):
+            # Match generation's serialization before rails can mutate the content.
+            original_content = str(original_content)
 
         messages = _normalize_messages_for_rails(messages, rails_to_run)
         options["log"] = {"activated_rails": True}
@@ -1710,6 +1827,8 @@ class LLMRails(BaseGuardrails):
         self,
         messages: List[dict],
         rail_types: Optional[List[RailType]] = None,
+        *,
+        tools: Optional[List[dict]] = None,
     ) -> RailsResult:
         """Run rails on messages based on their content (synchronous).
 
@@ -1718,11 +1837,15 @@ class LLMRails(BaseGuardrails):
         Args:
             messages: List of message dicts with 'role' and 'content' fields.
             rail_types: Optional list of rail types to run. See check_async() for details.
+            tools: Not supported. See check_async() for details.
 
         Returns:
             RailsResult containing status, content, and optional blocking rail name.
 
         Raises:
+            RailTypeNotSupportedError: If ``tools`` is given, or a requested rail
+                type is ``tool_call`` or ``tool_result``, which only the IORails
+                engine runs.
             RailTypeNotConfiguredError: If a requested rail type has no
                 configured flows.
         """
@@ -1732,7 +1855,7 @@ class LLMRails(BaseGuardrails):
             )
 
         loop = get_or_create_event_loop()
-        return loop.run_until_complete(self.check_async(messages, rail_types=rail_types))
+        return loop.run_until_complete(self.check_async(messages, rail_types=rail_types, tools=tools))
 
     def register_action(self, action: Callable, name: Optional[str] = None) -> Self:
         """Register a custom action for the rails configuration."""
@@ -1806,8 +1929,9 @@ class LLMRails(BaseGuardrails):
 
     async def _run_output_rails_in_streaming(
         self,
-        streaming_handler: AsyncIterator[str],
+        streaming_handler: AsyncIterator[Union[str, dict, ToolCallChunk, ToolCallDeltaChunk]],
         output_rails_streaming_config: OutputRailsStreamingConfig,
+        output_rail_actions: List[Tuple[str, Tuple[str, Any]]],
         prompt: Optional[str] = None,
         messages: Optional[List[dict]] = None,
         stream_first: Optional[bool] = None,
@@ -1912,10 +2036,57 @@ class LLMRails(BaseGuardrails):
                 **resolved_action_params,
             }
 
+        async def _run_parallel_rails(bot_response_chunk: str) -> Optional[str]:
+            """Run every output rail on the chunk in parallel and return the frame that ends the stream, if any."""
+            # Nothing to check, and the Colang 2.x runtime does not register the parallel rails action.
+            if not output_rail_actions:
+                return None
+            try:
+                context = _prepare_context_for_parallel_rails(bot_response_chunk, prompt, messages)
+                flows_with_params = {
+                    flow_id: {
+                        "action_name": action_name,
+                        "params": _prepare_params(
+                            flow_id=flow_id,
+                            action_name=action_name,
+                            bot_response_chunk=bot_response_chunk,
+                            prompt=prompt,
+                            messages=messages,
+                            action_params=action_params,
+                        ),
+                    }
+                    for flow_id, (action_name, action_params) in output_rail_actions
+                }
+                result, status = await self.runtime.action_dispatcher.execute_action(
+                    _PARALLEL_OUTPUT_RAILS_ACTION,
+                    {
+                        "flows_with_params": flows_with_params,
+                        "events": _create_events_for_chunk(bot_response_chunk, context),
+                    },
+                )
+            except Exception:
+                # The exception text can carry provider or config details, so it goes to the log, not the client.
+                log.exception("Parallel output rails failed during streaming")
+                result, status = None, "failed"
+
+            if status != "success":
+                error_message = f"Action {_PARALLEL_OUTPUT_RAILS_ACTION} failed with status: {status}"
+                log.error(error_message)
+                return _parallel_rails_failure_frame(error_message)
+
+            if not isinstance(result, ActionResult):
+                error_message = (
+                    f"Action {_PARALLEL_OUTPUT_RAILS_ACTION} must return ActionResult, got {type(result).__name__}"
+                )
+                log.error(error_message)
+                return _parallel_rails_failure_frame(error_message)
+
+            if not result.events:
+                return None
+            return _stop_event_frame(result.events[0])
+
         buffer_strategy = get_buffer_strategy(output_rails_streaming_config)
-        output_rails_flows_id = self.config.rails.output.flows
         stream_first = stream_first or output_rails_streaming_config.stream_first
-        get_action_details = partial(get_action_details_from_flow_id, flows=self.config.flows)
 
         parallel_mode = getattr(self.config.rails.output, "parallel", False)
 
@@ -1941,13 +2112,16 @@ class LLMRails(BaseGuardrails):
                     yield chunk
 
             if parallel_mode:
-                try:
-                    context = _prepare_context_for_parallel_rails(bot_response_chunk, prompt, messages)
-                    events = _create_events_for_chunk(bot_response_chunk, context)
+                stop_frame = await _run_parallel_rails(bot_response_chunk)
+                # update explain info for parallel mode
+                self._explain_info = self._ensure_explain_info()
+                if stop_frame is not None:
+                    yield stop_frame
+                    return
 
-                    flows_with_params = {}
-                    for flow_id in output_rails_flows_id:
-                        action_name, action_params = get_action_details(flow_id)
+            else:
+                for flow_id, (action_name, action_params) in output_rail_actions:
+                    try:
                         params = _prepare_params(
                             flow_id=flow_id,
                             action_name=action_name,
@@ -1956,79 +2130,6 @@ class LLMRails(BaseGuardrails):
                             messages=messages,
                             action_params=action_params,
                         )
-                        flows_with_params[flow_id] = {
-                            "action_name": action_name,
-                            "params": params,
-                        }
-
-                    result_tuple = await self.runtime.action_dispatcher.execute_action(
-                        "run_output_rails_in_parallel_streaming",
-                        {
-                            "flows_with_params": flows_with_params,
-                            "events": events,
-                        },
-                    )
-
-                    # ActionDispatcher.execute_action always returns (result, status)
-                    result, status = result_tuple
-
-                    if status != "success":
-                        log.error(f"Parallel rails execution failed with status: {status}")
-                        # continue processing the chunk even if rails fail
-                        pass
-                    else:
-                        # if there are any stop events, content was blocked or internal error occurred
-                        result_events = getattr(result, "events", None)
-                        if result_events:
-                            # extract the flow info from the first stop event
-                            stop_event = result_events[0]
-                            blocked_flow = stop_event.get("flow_id", "output rails")
-                            error_type = stop_event.get("error_type")
-
-                            if error_type == "internal_error":
-                                error_message = stop_event.get("error_message", "Unknown error")
-                                reason = f"Internal error in {blocked_flow} rail: {error_message}"
-                                error_code = "rail_execution_failure"
-                                error_type = "internal_error"
-                            else:
-                                reason = f"Blocked by {blocked_flow} rails."
-                                error_code = "content_blocked"
-                                error_type = "guardrails_violation"
-
-                            error_data = {
-                                "error": {
-                                    "message": reason,
-                                    "type": error_type,
-                                    "param": blocked_flow,
-                                    "code": error_code,
-                                }
-                            }
-                            yield json.dumps(error_data)
-                            return
-
-                except Exception as e:
-                    log.error(f"Error in parallel rail execution: {e}")
-                    # don't block the stream for rail execution errors
-                    # continue processing the chunk
-                    pass
-
-                # update explain info for parallel mode
-                self._explain_info = self._ensure_explain_info()
-
-            else:
-                for flow_id in output_rails_flows_id:
-                    action_name, action_params = get_action_details(flow_id)
-
-                    params = _prepare_params(
-                        flow_id=flow_id,
-                        action_name=action_name,
-                        bot_response_chunk=bot_response_chunk,
-                        prompt=prompt,
-                        messages=messages,
-                        action_params=action_params,
-                    )
-
-                    try:
                         result, status = await self.runtime.action_dispatcher.execute_action(action_name, params)
                     except Exception:
                         log.exception("Action %s failed during sequential streaming", action_name)
@@ -2038,15 +2139,7 @@ class LLMRails(BaseGuardrails):
                     if status != "success":
                         error_message = f"Action {action_name} failed with status: {status}"
                         log.error(error_message)
-                        error_data = {
-                            "error": {
-                                "message": f"Internal error in {flow_id} rail: {error_message}",
-                                "type": "internal_error",
-                                "param": flow_id,
-                                "code": "rail_execution_failure",
-                            }
-                        }
-                        yield json.dumps(error_data)
+                        yield _rail_execution_failure_frame(flow_id, error_message)
                         return
 
                     try:
@@ -2054,44 +2147,100 @@ class LLMRails(BaseGuardrails):
                     except TypeError as e:
                         error_message = str(e)
                         log.error(error_message)
-                        error_data = {
-                            "error": {
-                                "message": f"Internal error in {flow_id} rail: {error_message}",
-                                "type": "internal_error",
-                                "param": flow_id,
-                                "code": "rail_execution_failure",
-                            }
-                        }
-                        yield json.dumps(error_data)
+                        yield _rail_execution_failure_frame(flow_id, error_message)
                         return
 
                     if outcome.is_blocked:
-                        reason = f"Blocked by {flow_id} rails."
-
-                        # return the error as a plain JSON string (not in SSE format)
                         # NOTE: When integrating with the OpenAI Python client, the server code should:
                         # 1. detect this JSON error object in the stream
                         # 2. terminate the stream
                         # 3. format the error following OpenAI's SSE format
                         # the OpenAI client will then properly raise an APIError with this error message
-
-                        error_data = {
-                            "error": {
-                                "message": reason,
-                                "type": "guardrails_violation",
-                                "param": flow_id,
-                                "code": "content_blocked",
-                            }
-                        }
-
-                        # return as plain JSON: the server should detect this JSON and convert it to an HTTP error
-                        yield json.dumps(error_data)
+                        yield _content_blocked_frame(flow_id)
                         return
 
             if not stream_first:
                 # yield the individual chunks directly from the buffer strategy
                 for chunk in user_output_chunks:
                     yield chunk
+
+
+def _rail_execution_failure_frame(flow_id: str, error_message: str) -> str:
+    """The streaming error frame that ends a stream because the *flow_id* output rail could not run."""
+    return _internal_error_frame(flow_id, f"Internal error in {flow_id} rail: {error_message}")
+
+
+def _parallel_rails_failure_frame(error_message: str) -> str:
+    """The streaming error frame that ends a stream because the parallel output rails could not run as a whole."""
+    return _internal_error_frame(_PARALLEL_OUTPUT_RAILS_PARAM, f"Internal error in output rails: {error_message}")
+
+
+def _internal_error_frame(param: str, message: str) -> str:
+    """The `rail_execution_failure` streaming error frame with the given *param* and *message*."""
+    return json.dumps(
+        {
+            "error": {
+                "message": message,
+                "type": "internal_error",
+                "param": param,
+                "code": "rail_execution_failure",
+            }
+        }
+    )
+
+
+def _content_blocked_frame(flow_id: str) -> str:
+    """The streaming error frame that ends a stream because the *flow_id* output rail blocked it."""
+    # A plain JSON string, not SSE: the server detects it and converts it into an error for the client.
+    return json.dumps(
+        {
+            "error": {
+                "message": f"Blocked by {flow_id} rails.",
+                "type": "guardrails_violation",
+                "param": flow_id,
+                "code": "content_blocked",
+            }
+        }
+    )
+
+
+def _stop_event_frame(stop_event: dict) -> str:
+    """The streaming error frame for a stop event from the parallel output rails action."""
+    stopped_flow = stop_event.get("flow_id", _PARALLEL_OUTPUT_RAILS_PARAM)
+    if stop_event.get("error_type") == "internal_error":
+        return _rail_execution_failure_frame(stopped_flow, stop_event.get("error_message", "Unknown error"))
+    return _content_blocked_frame(stopped_flow)
+
+
+def _reject_tools(tools: Optional[List[dict]]) -> None:
+    """Raise when a check passes tools, which only an IORails tool-call check reads."""
+    # Refused rather than dropped, so a caller relying on tool validation learns it did not run.
+    if tools is not None:
+        raise RailTypeNotSupportedError(
+            "LLMRails check() does not run tool rails, so it does not take tools; "
+            "tool_call checks run on the IORails engine only."
+        )
+
+
+def _iorails_only_tool_settings(config: RailsConfig) -> List[str]:
+    """The tool rail settings *config* sets that only the IORails engine runs."""
+    settings = []
+    if any(config.rails.tool_call.per_tool.values()):
+        settings.append("rails.tool_call.per_tool")
+    if any(config.rails.tool_result.per_tool.values()):
+        settings.append("rails.tool_result.per_tool")
+    return settings
+
+
+def _reject_tool_rail_types(rail_types: List[RailType]) -> None:
+    """Raise when any requested rail type is a tool rail type, which LLMRails check() cannot run."""
+    # Checked before the configured-flows loop: without it a tool rail type raises AttributeError
+    # there, or would pass silently once the config grows a matching section.
+    requested_rail_type = sorted({rail_type.value for rail_type in rail_types if rail_type in TOOL_RAIL_TYPES})
+    if requested_rail_type:
+        raise RailTypeNotSupportedError(
+            f"LLMRails supports input and output rails only, not {', '.join(requested_rail_type)}"
+        )
 
 
 def _determine_rails_from_messages(messages: List[dict]) -> Optional[dict]:

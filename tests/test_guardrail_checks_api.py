@@ -308,6 +308,36 @@ def test_tool_call_safe():
     assert result["messages"][0]["role"] == "assistant"
 
 
+@pytest.mark.parametrize(
+    ("content", "status"),
+    [("Temperature: 22 degrees", "success"), ("password: secret123", "blocked")],
+)
+def test_standalone_tool_result_rails(content, status):
+    response = client.post(
+        "/v1/guardrail/checks",
+        json={
+            "model": "test",
+            "messages": [{"role": "tool", "content": content, "name": "get_weather", "tool_call_id": "call_123"}],
+            "guardrails": {"config_id": "tool_rails_combined"},
+        },
+    )
+
+    assert response.status_code == 200
+    result = response.json()
+    assert result["status"] == status
+    assert result["rails_status"]["check tool response safety"]["status"] == status
+
+
+@pytest.mark.parametrize("message", [{"content": "missing role"}, {"role": 123, "content": "invalid role"}])
+def test_legacy_message_requires_string_role(message):
+    response = client.post(
+        "/v1/guardrail/checks",
+        json={"model": "test", "messages": [message]},
+    )
+
+    assert response.status_code == 422
+
+
 def test_tool_call_dangerous_blocked():
     """Dangerous tool call is blocked by tool_output rails."""
     response = client.post(

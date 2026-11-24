@@ -127,9 +127,13 @@ See [AI_POLICY.md](./AI_POLICY.md) for the full policy.
 
 ## Development Setup
 
-NeMo Guardrails supports Python 3.10 through 3.13. Install Git and uv. Follow the
+NeMo Guardrails supports Python 3.11 through 3.13. Install Git and uv. Follow the
 [uv installation instructions](https://docs.astral.sh/uv/getting-started/installation/)
 for your platform.
+
+Review the Python support matrix before each release. Supported versions must
+receive upstream maintenance and pass CI. Announce removal of an end-of-life
+version as a breaking change at a release boundary.
 
 GitHub Actions uses the uv version pinned in
 [`.github/actions/setup-uv/action.yml`](./.github/actions/setup-uv/action.yml)
@@ -154,12 +158,13 @@ cd nemoguardrails
 make install
 ```
 
-Documentation tooling requires Node.js 22. The Fern CLI version is pinned in
+Documentation tooling requires Node.js 22. Run `npm ci` before using the Fern
+build, preview, or publishing commands. The Fern CLI version is pinned in
 `fern/fern.config.json` and invoked through `npx`; no separate Python docs
 dependency group is required.
 
 Valid optional extras are `sdd`, `eval`, `gcp`, `tracing`, `jailbreak`,
-`multilingual`, `server`, `chat-ui`, and `all`. For example:
+`multilingual`, `server`, `chat-ui`, `nest-asyncio`, and `all`. For example:
 
 ```bash
 uv sync --locked --extra server --extra tracing
@@ -190,6 +195,9 @@ Run the smallest meaningful test set first, then broaden validation when the
 change touches shared runtime behavior, public APIs, packaging, server behavior,
 tracing, or docs.
 
+The suites in `integration_tests/` run NeMo Guardrails against real agents and clients, and `make test` doesn't run them.
+See [`integration_tests/README.md`](integration_tests/README.md) for what each suite checks, what it needs, and how to run it.
+
 Set up local pre-commit hooks if you want checks to run before every commit:
 
 ```bash
@@ -208,7 +216,8 @@ Documentation lives in `docs/` as MDX and is built with Fern. Edit the `.mdx`
 files directly and check changes with `make docs-fern` (`make docs-fern-live`
 serves locally; `make docs-fern-strict` validates links). The Fern CLI version
 is pinned in `fern/fern.config.json`; do not run `fern upgrade` as part of normal
-documentation changes.
+documentation changes. See [Documentation](./docs/README.mdx) for the publishing
+workflow, including permanent snapshot tags for historical Fern versions.
 
 For notebook documentation, place the notebook in its own folder and generate a
 matching `README.md` with:

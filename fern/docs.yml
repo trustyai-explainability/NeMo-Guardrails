@@ -19,17 +19,13 @@ theme:
   footer-nav: minimal
 
 logo:
-  href: /nemo/guardrails/latest
+  href: /nemo/guardrails/latest/home
   right-text: NeMo Guardrails
 
 favicon: ./assets/NVIDIA_symbol.svg
 
 css:
   - ./main.css
-
-experimental:
-  mdx-components:
-    - ../docs/_components
 
 navbar-links:
   - type: github
@@ -48,8 +44,27 @@ versions:
   - display-name: Latest
     path: ../docs/index.yml
     slug: latest
+  # Permanent snapshot tags keep these curated commits reachable after this PR
+  # is squash-merged. Do not move or delete these tags.
+  - display-name: v0.25.0
+    ref: fern-docs-snapshot-v0.25.0-r2
+    slug: v0.25.0
+  - display-name: v0.24.1
+    ref: fern-docs-snapshot-v0.24.1
+    slug: v0.24.1
+  - display-name: v0.24.0
+    ref: fern-docs-snapshot-v0.24.0
+    slug: v0.24.0
+  - display-name: v0.23.0
+    ref: fern-docs-snapshot-v0.23.0-r2
+    slug: v0.23.0
+  - display-name: v0.22.0
+    ref: fern-docs-snapshot-v0.22.0
+    slug: v0.22.0
 
 redirects:
+  - source: "/nemo/guardrails/latest/reference/hooks-server-api"
+    destination: "/nemo/guardrails/latest/reference/hooks-server-api/overview"
   # Paths are relative to the site root; subpath prefix matches instances + custom-domain.
   # Legacy HTML URLs used .../path/to/page.html and .../path/to/page/index.html;
   # Fern canonical URLs omit those suffixes.

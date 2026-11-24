@@ -49,6 +49,7 @@ from nemoguardrails.server.api import _get_rails, registered_loggers
 from nemoguardrails.server.manifest import FORK_MANIFEST_TAG
 from nemoguardrails.server.schemas.checks import (
     DetailedGuardrailCheckResponse,
+    LegacyGuardrailCheckRequest,
     MessageCheckResult,
     RailStatus,
 )
@@ -282,7 +283,7 @@ async def _check_tool_output_rails(llm_rails: LLMRails, tool_calls: list) -> _To
     activated_rail_names: List[str] = [
         str(event.get("flow_id"))
         for event in result_events
-        if event.get("type") == "StartToolOutputRail" and event.get("flow_id")
+        if event.get("type") == "StartToolCallRail" and event.get("flow_id")
     ]
     blocked_message = next(
         (event.get("script") for event in result_events if event.get("type") == "StartUtteranceBotAction"),
@@ -345,8 +346,8 @@ def _create_check_options(
             output=run_output,
             retrieval=False,
             dialog=False,
-            tool_input=run_tool_input,
-            tool_output=run_tool_output,
+            tool_result=run_tool_input,
+            tool_call=run_tool_output,
         ),
         log=GenerationLogOptions(activated_rails=True, internal_events=True, llm_calls=True),
     )
@@ -526,7 +527,7 @@ def _build_check_messages(role: str, content: str, msg: dict) -> List[dict]:
     deprecated=True,
     summary="Evaluates messages against configured input/output rails without generating an LLM response.",
 )
-async def guardrail_checks(body: GuardrailsChatCompletionRequest, request: Request):
+async def guardrail_checks(body: LegacyGuardrailCheckRequest, request: Request):
     """Check messages against guardrails without generating LLM responses.
 
     Deprecated: migrate to `/v1/checks`. The request and response formats differ;

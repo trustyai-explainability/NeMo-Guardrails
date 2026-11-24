@@ -138,7 +138,9 @@ Use `--auto-reload` only in development environments. It is not recommended for 
 
 ## Model Provider Configuration
 
-When the `model` field is specified in a chat completion request, the server uses environment variables to determine which LLM provider and endpoint to use.
+When the `model` field is specified in a chat completion request, that model name replaces the name of the main model in your configuration.
+The rest of the configured main model still applies, including `engine`, `api_key_env_var`, `mode`, and `parameters`.
+Use the following environment variables to override the provider and endpoint the server uses for that model.
 
 ```{list-table}
 :header-rows: 1
@@ -148,10 +150,10 @@ When the `model` field is specified in a chat completion request, the server use
   - Description
 
 * - `MAIN_MODEL_ENGINE`
-  - The LLM engine to use (e.g., `"openai"`, `"nim"`, `"vllm"`, `"anthropic"`). Default: `"openai"`.
+  - The LLM engine to use (e.g., `"openai"`, `"nim"`, `"vllm"`, `"anthropic"`). Overrides the `engine` of the configured main model. Defaults to that configured `engine`, or to `"openai"` if your configuration declares no main model.
 
 * - `MAIN_MODEL_BASE_URL`
-  - Base URL for the LLM provider. Use this for self-hosted models (e.g., `"http://localhost:8080/v1"`).
+  - Base URL for the LLM provider. Overrides `parameters.base_url` of the configured main model. Use this for self-hosted models (e.g., `"http://localhost:8080/v1"`).
 ```
 
 Set the appropriate API key for your provider:
@@ -243,8 +245,29 @@ The check is intentionally shallow: it reflects only that the server process is 
 Use this endpoint rather than `GET /` for health probes, because `GET /` redirects to the chat UI when the UI is enabled.
 When the server runs behind a path prefix (`--prefix`), the endpoints are served at `<prefix>/v1/health` and `<prefix>/healthz`.
 
+## Metrics
+
+The server can expose the IORails non-streaming admission-queue metrics on a Prometheus scrape endpoint that runs on a separate port (default `9464`).
+Set `metrics.enabled: true` in the guardrails configuration, then start the server with the IORails engine and Prometheus exporter enabled.
+Metrics are not exported by default.
+
+```bash
+NEMO_GUARDRAILS_IORAILS_ENGINE=1 nemoguardrails server --config ./config --metrics-exporter prometheus
+```
+
+In another terminal, [send a non-streaming chat request](/run-guardrailed-inference/using-fastapi-server/chat-with-guardrailed-model#basic-request) using your configuration ID and configured model.
+Then scrape the endpoint to check that the queue gauges appear:
+
+```bash
+curl http://localhost:9464/metrics
+```
+
+For the exported metrics, the environment-variable equivalents, and the Grafana setup, refer to [Prometheus and Grafana for the Guardrails Server](/observability/metrics/server-prometheus-grafana).
+
 ## Related Topics
 
 - [Chat with a Guardrailed Model](/run-guardrailed-inference/using-fastapi-server/chat-with-guardrailed-model)
 - [List Guardrail Configurations](/run-guardrailed-inference/using-fastapi-server/list-guardrail-configs)
 - [Create Chat Completion](api:POST/v1/chat/completions)
+- [Checking Messages Against Rails](/run-guardrailed-inference/using-python-apis/check-messages#guardrails-server)
+- [Check Content](api:POST/v1/checks)

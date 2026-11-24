@@ -22,6 +22,7 @@ from enum import Enum
 from typing import Any, Optional, TypeAlias
 
 from nemoguardrails.actions.rail_outcome import RailOutcome
+from nemoguardrails.rails.llm.options import MAX_QUOTED_IDENTITY_LENGTH, ToolViolation
 from nemoguardrails.types import LLMResponse, UsageInfo
 
 # LLMMessage can contain role/content, plus optional tool_calls / tool_call_id / name; content may be None
@@ -90,6 +91,7 @@ class RailCallRecord:
     started_at: Optional[float] = None
     finished_at: Optional[float] = None
     duration: Optional[float] = None
+    tool_name: Optional[str] = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,7 +102,10 @@ class RailResult:
     truth: ``is_safe``, ``reason`` and ``return_value`` are derived views of it rather
     than a second copy that could drift. What this type adds is the aggregation
     ``RailOutcome`` has no concept of, because it belongs to running *many* rails:
-    which one blocked (``triggered_rail``) and what every rail did (``records``).
+    which one blocked (``triggered_rail``), which tool calls or results it blocked
+    (``tool_violations``), what every rail did (``records``), what the rails ahead
+    of a block rewrote the checked text to (``rewrite_before_block``), and whether a rail
+    free to rewrite that text never decided on it (``rewrite_pending``).
 
     ``records`` carries the per-rail execution records for every rail that ran in this
     check (not just the blocking one), so IORails can synthesize a ``GenerationLog``.
@@ -114,13 +119,25 @@ class RailResult:
 
     outcome: RailOutcome
     triggered_rail: str | None = None
+    tool_violations: tuple[ToolViolation, ...] = ()
     records: tuple[RailCallRecord, ...] = field(default=(), compare=False)
+    # Capture data like ``records``, not part of the verdict: the block stands, but a record of
+    # the request that carried the text a mask removed would undo the mask.
+    rewrite_before_block: str | None = field(default=None, compare=False)
+    # Capture data too: a configured mask that failed, blocked, never ran or was switched off
+    # left the text as sent, so a record of the request must withhold it rather than trust a mask.
+    rewrite_pending: bool = field(default=False, compare=False)
     __hash__ = None
 
     @property
     def is_safe(self) -> bool:
         """Whether the checked content may proceed."""
         return not self.outcome.is_blocked
+
+    @property
+    def failed(self) -> bool:
+        """Whether this block came from a rail that raised rather than one that decided."""
+        return self.outcome.failed
 
     @property
     def reason(self) -> str | None:
@@ -131,11 +148,20 @@ class RailResult:
     def return_value(self) -> dict[str, Any]:
         """The rail's structured verdict, as the log's ``ExecutedAction.return_value``.
 
-        The decision is applied last so it wins: ``metadata`` is free-form evidence and a
-        custom action may put an ``allowed`` key in it, which must not be able to record a
-        blocked rail as having allowed the content.
+        The verdict keys are applied last so they win: ``metadata`` is free-form evidence and a
+        custom action may put an ``allowed`` or ``failed`` key in it, which must not be able to
+        record a blocked rail as having allowed the content, nor forge a rail failure.
+
+        ``failed`` is always present, as ``allowed`` is, so a log consumer reads a verdict
+        rather than inferring one from a missing key. Without it a rail that broke and a rail
+        that decided to block are the same record, which is the distinction the client-facing
+        message already draws.
         """
-        return {**self.outcome.metadata, _VERDICT_DECISION_KEY: self.is_safe}
+        return {
+            **self.outcome.metadata,
+            _VERDICT_DECISION_KEY: self.is_safe,
+            _VERDICT_FAILED_KEY: self.failed,
+        }
 
     @classmethod
     def allow(
@@ -155,12 +181,14 @@ class RailResult:
         reason: str | None = None,
         metadata: Mapping[str, Any] | None = None,
         triggered_rail: str | None = None,
+        tool_violations: tuple[ToolViolation, ...] = (),
         records: tuple[RailCallRecord, ...] = (),
     ) -> "RailResult":
-        """A result that stops the content. Only a block names a triggering rail."""
+        """A result that stops the content. Only a block names a triggering rail or tool violations."""
         return cls(
             RailOutcome.block(reason=reason, metadata=metadata),
             triggered_rail=triggered_rail,
+            tool_violations=tool_violations,
             records=records,
         )
 
@@ -224,6 +252,11 @@ def truncate(text: object, max_len: int | None = None) -> str:
     return s[:limit] + "..."
 
 
+def quoted_identity(value: object) -> str:
+    """A tool name or call id as a reason quotes it: cut to ``MAX_QUOTED_IDENTITY_LENGTH`` characters."""
+    return truncate(value, MAX_QUOTED_IDENTITY_LENGTH)
+
+
 def serialize_prompt(messages: list[dict]) -> str:
     """Render a chat message list to a role-labeled string for GenerationLog's ``prompt``.
 
@@ -244,6 +277,7 @@ def serialize_prompt(messages: list[dict]) -> str:
 
 
 _VERDICT_DECISION_KEY = "allowed"
+_VERDICT_FAILED_KEY = "failed"
 _UNSPECIFIED_REASON = "unspecified"
 
 

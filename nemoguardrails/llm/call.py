@@ -43,7 +43,15 @@ from nemoguardrails.context import (
 from nemoguardrails.exceptions import LLMCallException, LLMClientError
 from nemoguardrails.logging.explain import LLMCallInfo
 from nemoguardrails.logging.llm_tracker import track_llm_call
-from nemoguardrails.types import ChatMessage, LLMModel, LLMResponse, LLMResponseChunk, UsageInfo
+from nemoguardrails.types import (
+    ChatMessage,
+    LLMModel,
+    LLMResponse,
+    LLMResponseChunk,
+    ToolCallChunk,
+    ToolCallDeltaChunk,
+    UsageInfo,
+)
 
 try:
     from nemoguardrails.header_forwarding import get_extra_headers_for_llm as _get_extra_headers_for_llm
@@ -131,6 +139,8 @@ async def _stream_llm_call(
     accumulated_provider_metadata: Dict[str, Any] = {}
     accumulated_reasoning: List[str] = []
     tool_calls = None
+    streaming_tool_deltas = False
+    tool_calls_var.set(None)
     model_name: Optional[str] = None
     finish_reason: Optional[str] = None
     request_id: Optional[str] = None
@@ -142,6 +152,8 @@ async def _stream_llm_call(
 
             if chunk.delta_reasoning:
                 accumulated_reasoning.append(chunk.delta_reasoning)
+            if chunk.tool_call_deltas:
+                streaming_tool_deltas = True
             if chunk.delta_tool_calls:
                 tool_calls = chunk.delta_tool_calls
             if chunk.model:
@@ -160,6 +172,12 @@ async def _stream_llm_call(
                 streaming_handler_metadata.update(chunk_metadata)
 
             await handler.push_chunk(content, chunk_metadata)
+            if streaming_tool_deltas and (chunk.tool_call_deltas or chunk.finish_reason):
+                await handler.push_chunk(
+                    ToolCallDeltaChunk(tool_calls=chunk.tool_call_deltas or [], finish_reason=chunk.finish_reason)
+                )
+            elif chunk.delta_tool_calls and not streaming_tool_deltas:
+                await handler.push_chunk(ToolCallChunk(tool_calls=chunk.delta_tool_calls))
 
         llm_response_metadata_var.set(accumulated_provider_metadata or None)
 
@@ -464,6 +482,13 @@ def _extract_and_remove_think_tags(response: LLMResponse) -> Optional[str]:
         response.content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
         return reasoning_content
     return None
+
+
+def _prepend_think_tags(content: str, reasoning_content: Optional[str]) -> str:
+    """Re-attach `reasoning_content` to `content` as a leading <think> block, the inverse of `_extract_and_remove_think_tags`."""
+    if not reasoning_content:
+        return content
+    return f"<think>{reasoning_content}</think>\n{content}"
 
 
 def _store_tool_calls(response: LLMResponse) -> None:

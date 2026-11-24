@@ -162,27 +162,35 @@ def build_error_payload(
 # looks like an OpenAI error object cannot truncate a stream or skip output
 # rails. ``downstream_error`` carries an upstream HTTP status;
 # ``generation_error`` is a status-less generation failure;
-# ``guardrails_violation`` is emitted when a rail blocks.
+# ``guardrails_violation`` is emitted when a rail blocks;
+# ``internal_error`` is emitted when a rail fails to execute.
 GENERATION_ERROR_TYPE = "generation_error"
 DOWNSTREAM_ERROR_TYPE = "downstream_error"
 GUARDRAILS_VIOLATION_TYPE = "guardrails_violation"
+INTERNAL_ERROR_TYPE = "internal_error"
 
 STREAM_ERROR_TYPES = frozenset(
     {
         GENERATION_ERROR_TYPE,
         DOWNSTREAM_ERROR_TYPE,
         GUARDRAILS_VIOLATION_TYPE,
+        INTERNAL_ERROR_TYPE,
     }
 )
 
 
 def as_client_error(exception: BaseException) -> Optional[LLMClientError]:
-    """Return the underlying :class:`LLMClientError`, unwrapping ``LLMCallException``."""
-    inner = getattr(exception, "inner_exception", None)
-    if isinstance(inner, LLMClientError):
-        return inner
-    if isinstance(exception, LLMClientError):
-        return exception
+    """Return the underlying :class:`LLMClientError`, following nested ``inner_exception`` links."""
+    # The chain can be more than one link deep: a library rail reaching an IORails model
+    # raises ModelEngineError carrying the client error, and ``llm_call`` then wraps that
+    # again into LLMCallException. ``seen`` guards a wrapper that references itself.
+    seen = set()
+    current: Any = exception
+    while current is not None and id(current) not in seen:
+        if isinstance(current, LLMClientError):
+            return current
+        seen.add(id(current))
+        current = getattr(current, "inner_exception", None)
     return None
 
 

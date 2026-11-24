@@ -14,11 +14,13 @@
 # limitations under the License.
 
 import logging
+from copy import deepcopy
 
 import pytest
 
 from nemoguardrails import LLMRails, RailsConfig
-from nemoguardrails.exceptions import RailTypeNotConfiguredError
+from nemoguardrails.actions.actions import ActionResult
+from nemoguardrails.exceptions import RailTypeNotConfiguredError, RailTypeNotSupportedError
 from nemoguardrails.rails.llm.llmrails import (
     _determine_rails_from_messages,
     _get_blocking_rail,
@@ -27,6 +29,7 @@ from nemoguardrails.rails.llm.llmrails import (
     _normalize_messages_for_rails,
 )
 from nemoguardrails.rails.llm.options import ActivatedRail, GenerationLog, GenerationResponse, RailStatus, RailType
+from tests.utils import check_entry_points, run_check
 
 
 class TestDetermineRailsFromMessages:
@@ -231,6 +234,83 @@ class TestGetResponseContent:
         assert _get_last_response_content(response) == ""
 
 
+class TestContentListStatus:
+    @check_entry_points
+    @pytest.mark.parametrize("direction,role", [("input", "user"), ("output", "assistant")])
+    @pytest.mark.parametrize(
+        "content",
+        [
+            [],
+            [{"type": "text", "text": "hello"}],
+            [
+                {"type": "text", "text": "hello"},
+                {"type": "image_url", "image_url": {"url": "https://example.com/image.png"}},
+            ],
+        ],
+    )
+    def test_unchanged_list_passes_with_string_content(self, entry_point, direction, role, content):
+        rails = self._rails(direction, "$unchanged = True")
+        result = run_check(rails, entry_point, [{"role": role, "content": content}], rail_types=[RailType(direction)])
+        assert result.status == RailStatus.PASSED
+        assert result.content == str(content)
+        assert isinstance(result.content, str)
+
+    @check_entry_points
+    @pytest.mark.parametrize(
+        "direction,role,variable", [("input", "user", "user_message"), ("output", "assistant", "bot_message")]
+    )
+    @pytest.mark.parametrize("field", ["text", "image_url"])
+    def test_nested_rewrite_is_modified(self, entry_point, direction, role, variable, field):
+        rails = self._rails(direction, "$result = execute rewrite")
+        content = [
+            {"type": "text", "text": "hello"},
+            {"type": "image_url", "image_url": {"url": "https://example.com/original.png"}},
+        ]
+        original = deepcopy(content)
+        expected = deepcopy(content)
+        if field == "text":
+            expected[0]["text"] = "masked"
+        else:
+            expected[1]["image_url"]["url"] = "https://example.com/replaced.png"
+
+        async def rewrite(context):
+            blocks = context[variable]
+            if field == "text":
+                blocks[0]["text"] = "masked"
+            else:
+                blocks[1]["image_url"]["url"] = "https://example.com/replaced.png"
+            return ActionResult(return_value=True, context_updates={variable: blocks})
+
+        rails.register_action(rewrite)
+        result = run_check(rails, entry_point, [{"role": role, "content": content}], rail_types=[RailType(direction)])
+        assert result.status == RailStatus.MODIFIED
+        assert result.content == str(expected)
+        assert result.content != str(original)
+
+    @check_entry_points
+    @pytest.mark.parametrize("direction,role", [("input", "user"), ("output", "assistant")])
+    def test_blocking_takes_precedence(self, entry_point, direction, role):
+        rails = self._rails(direction, "bot refuse to respond\n  stop")
+        result = run_check(
+            rails,
+            entry_point,
+            [{"role": role, "content": [{"type": "text", "text": "hello"}]}],
+            rail_types=[RailType(direction)],
+        )
+        assert result.status == RailStatus.BLOCKED
+        assert result.content == "I'm sorry, I can't respond to that."
+        assert result.rail == "test rail"
+
+    @staticmethod
+    def _rails(direction, body):
+        return LLMRails(
+            RailsConfig.from_content(
+                yaml_content=f"models: []\nrails:\n  {direction}:\n    flows: [test rail]\n",
+                colang_content=f"define flow test rail\n  {body}\n",
+            )
+        )
+
+
 @pytest.fixture
 def mock_rails():
     config = RailsConfig.from_content(
@@ -277,6 +357,14 @@ class TestCheckAsyncIntegration:
         result = await mock_rails.check_async(messages)
         assert result.status == RailStatus.BLOCKED
         assert result.rail is not None
+
+    @pytest.mark.asyncio
+    async def test_blocked_has_no_reason(self, mock_rails):
+        """LLMRails names the blocking rail but reports no reason for the block."""
+        messages = [{"role": "user", "content": "block"}]
+        result = await mock_rails.check_async(messages)
+        assert result.status == RailStatus.BLOCKED
+        assert result.reason is None
 
     @pytest.mark.asyncio
     async def test_input_modified(self, mock_rails):
@@ -577,6 +665,37 @@ class TestUnsatisfiableRailTypes:
         ]
         result = await input_only_rails.check_async(messages)
         assert result.status == RailStatus.PASSED
+
+
+_TOOL_RAIL_TYPE_REQUESTS = pytest.mark.parametrize(
+    ("rail_types", "unsupported"),
+    [
+        ([RailType.TOOL_CALL], "tool_call"),
+        ([RailType.TOOL_RESULT], "tool_result"),
+        ([RailType.INPUT, RailType.TOOL_CALL], "tool_call"),
+        ([RailType.TOOL_RESULT, RailType.TOOL_CALL, RailType.TOOL_CALL], "tool_call, tool_result"),
+    ],
+    ids=["tool_call", "tool_result", "input_and_tool_call", "both_tool_types_repeated"],
+)
+
+
+class TestToolRailTypesAreNotSupported:
+    """LLMRails check() runs input and output rails only, so a tool rail type fails loud instead of passing."""
+
+    @check_entry_points
+    @_TOOL_RAIL_TYPE_REQUESTS
+    def test_tool_rail_types_raise(self, mock_rails, entry_point, rail_types, unsupported):
+        """``check`` and ``check_async`` name each unsupported tool rail type once, in sorted order."""
+        with pytest.raises(RailTypeNotSupportedError) as excinfo:
+            run_check(mock_rails, entry_point, [{"role": "user", "content": "hello"}], rail_types=rail_types)
+        assert str(excinfo.value) == f"LLMRails supports input and output rails only, not {unsupported}"
+
+    @check_entry_points
+    @pytest.mark.parametrize("rail_types", [None, [RailType.INPUT]], ids=["auto_detected", "input"])
+    def test_tools_raise(self, mock_rails, entry_point, rail_types):
+        """Both entry points raise ``RailTypeNotSupportedError`` for ``tools``, which only a tool-call check reads."""
+        with pytest.raises(RailTypeNotSupportedError, match="tools"):
+            run_check(mock_rails, entry_point, [{"role": "user", "content": "hello"}], rail_types=rail_types, tools=[])
 
 
 @pytest.fixture

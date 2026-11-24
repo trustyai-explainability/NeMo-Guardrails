@@ -17,8 +17,15 @@ Verify your system meets the following requirements before installation.
 | Requirement          | Details                                                                                                                                        |
 | -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Operating System** | Windows, Linux, MacOS                                                                                                                          |
-| **Python**           | 3.10, 3.11, 3.12, or 3.13                                                                                                                      |
+| **Python**           | 3.11, 3.12, or 3.13                                                                                                                            |
 | **Hardware**         | 1 CPU with 4GB RAM. The NeMo Guardrails library runs on CPU. External models may require GPUs, which may be deployed separately to the library |
+
+<Note>
+Starting with version 0.25.0, the NVIDIA NeMo Guardrails library requires Python
+3.11 through 3.13. Python 3.10 reached
+[end of life on October 1, 2026](https://peps.python.org/pep-0619/#310-lifespan).
+Upgrade your Python environment before upgrading the library.
+</Note>
 
 ## Quick Start
 
@@ -62,6 +69,30 @@ Use the following steps to install the NeMo Guardrails library in a virtual envi
 
     This is required to access NVIDIA-hosted models on [build.nvidia.com](https://build.nvidia.com). The tutorials and example configurations ([examples/configs](https://github.com/NVIDIA-NeMo/Guardrails/tree/develop/examples/configs)) in this library include configurations that use NVIDIA-hosted models.
 
+## Verify the Installation
+
+Run these commands in the virtual environment where you installed the library:
+
+```bash
+python -c "import nemoguardrails; print(nemoguardrails.__version__)"
+nemoguardrails --help
+```
+
+The first command prints the installed package version. The second lists the CLI commands.
+These checks do not call a model or require an API key. Follow a [tutorial](/get-started/tutorials) to verify inference with your selected models.
+
+## Get the Example Files
+
+Installing with pip installs the Python package. To follow instructions that use repository paths such as `examples/configs/`, clone the repository and run those commands from its root:
+
+```bash
+git clone https://github.com/NVIDIA-NeMo/Guardrails.git
+cd Guardrails
+```
+
+For a released package, check out its matching release tag before using the examples. For example, use `git checkout v<installed-version>`, replacing `<installed-version>` with the version printed above.
+The `develop` branch contains development examples that may require a newer package.
+
 ## Alternative Installation Methods
 
 Install the NeMo Guardrails library from source using pip or uv. Choose this method if you want to contribute to the library or use the latest development version.
@@ -104,14 +135,21 @@ You can install the NeMo Guardrails library with optional extra packages to add 
 
 | Extra          | Description                                                                                                                                                                                                       |
 | -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `server`       | [Guardrails API server](/run-guardrailed-inference/using-fastapi-server/overview) dependencies (aiofiles for async file handling, openai for API schemas). FastAPI is a core dependency. Required to run `nemoguardrails server`. |
+| `server`       | [Guardrails API server](/run-guardrailed-inference/using-fastapi-server/overview) dependencies (aiofiles for async file handling, openai for API schemas). FastAPI is a core dependency. Required to run `nemoguardrails server` and the [Guardrails hooks server](/run-guardrailed-inference/using-hooks-server/overview), `nemoguardrails hooks-server`. |
 | `sdd`          | [Sensitive data detection](/configure-guardrails/guardrail-catalog/pii-detection#presidio-based-sensitive-data-detection) using Presidio                                                                               |
 | `eval`         | [Policy-based evaluation tools](/evaluation/evaluate-configuration) for testing guardrails                                                                                                                        |
 | `tracing`      | OpenTelemetry tracing support                                                                                                                                                                                     |
 | `gcp`          | Google Cloud Platform language services                                                                                                                                                                           |
 | `jailbreak`    | YARA-based jailbreak detection heuristics                                                                                                                                                                         |
 | `multilingual` | Language detection for multilingual content                                                                                                                                                                       |
+| `chat-ui`      | Chainlit chat UI dependencies                                                                                                                                                                                     |
+| `cel`          | Common Expression Language (CEL) rail support using `common-expression-language` (Python 3.11 and later)                                                                                                           |
+| `nest-asyncio` | Optional compatibility support for synchronous calls inside a running event loop. Automatic patching will be deprecated in 0.26. See [Nested AsyncIO Loop](/troubleshooting/troubleshooting#nested-asyncio-loop). |
 | `all`          | All optional packages                                                                                                                                                                                             |
+
+Starting with 0.25, the default installation does not require `nest-asyncio`.
+Use async APIs in notebooks and async applications. Existing examples that import `nest_asyncio` require `pip install 'nemoguardrails[nest-asyncio]'`.
+The `chat-ui` and `all` extras still install `nest-asyncio` through Chainlit. If you need an installation without that package, avoid those extras and verify your application's other dependencies.
 
 Some features such as [AlignScore](/configure-guardrails/guardrail-catalog/third-party/alignscore) have additional requirements. See the feature documentation for details.
 

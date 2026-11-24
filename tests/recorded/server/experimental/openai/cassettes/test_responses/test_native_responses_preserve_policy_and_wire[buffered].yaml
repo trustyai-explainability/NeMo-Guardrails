@@ -1,0 +1,135 @@
+version: 1
+interactions:
+- request:
+    method: POST
+    uri: https://api.openai.com/v1/responses
+    headers:
+      host:
+      - api.openai.com
+      accept:
+      - '*/*'
+      connection:
+      - keep-alive
+      user-agent:
+      - python-httpx/0.28.1
+      accept-encoding:
+      - identity
+      content-type:
+      - application/json
+    parsed_body:
+      model: gpt-5-nano-2025-08-07
+      input: 'Reply with exactly: Hello, recorded Responses!'
+      stream: false
+      store: false
+      max_output_tokens: 256
+      reasoning:
+        effort: minimal
+      metadata:
+        test: native-responses
+  response:
+    status:
+      code: 200
+      message: OK
+    headers:
+      content-type:
+      - application/json
+      connection:
+      - keep-alive
+      server:
+      - cloudflare
+      strict-transport-security:
+      - max-age=31536000; includeSubDomains; preload
+      access-control-expose-headers:
+      - X-Request-ID, Server-Timing-Total, X-OpenAI-Inference-Capacity-Reason
+      - CF-Ray
+      - CF-Ray
+      alt-svc:
+      - h3=":443"; ma=86400
+    body:
+      parsed_body:
+        id: '[RECORDED_RESPONSE_ID]'
+        object: response
+        created_at: 1794826687
+        status: completed
+        access_programs: null
+        background: false
+        billing:
+          payer: developer
+        completed_at: 1794826689
+        error: null
+        frequency_penalty: 0.0
+        image:
+          context_compression: disabled
+        incomplete_details: null
+        input_transformations: []
+        instructions: null
+        max_output_tokens: 256
+        max_tool_calls: null
+        model: gpt-5-nano-2025-08-07
+        moderation: null
+        output:
+        - id: rs_0549019692e03980016afae1c0ff6c87d2b847f4af53dbd7e5
+          type: reasoning
+          content: []
+          encrypted_content: gAAAAABq-uHBBO8XtDhp8FiHjL7jRKnc6xqAeD-6IMFYlWMVJGlLVKHbytnDDlJcTGTj7-5egG7OP63VR63gKqJ3jAzQHkegOeODxVcOZ0bPnP9VCawAWU051LjDHzz_8-XiUQJ_r_3upboocs2YqoU2BF6km1g-5hXgnAuQtawXttoTPADEzJyoIUd7zBV6MbUVLDR17PAozCFDhsqjLUGtkT6RE4P4lnaSJwquqSVnF5_meQoKwYsLYu1zxCzbAy-P51odGHdJ4Up_yu5L2RyWm3SCOAFhcPECN6atDeFZABSRl_9bPkgedGmKiTEH98VJx93aqYGg1xvT1hdfKOP3JDukIcWVNSWb_yIufB41j4sBmymYpDZmSTvIyN40jpuCNS7ZkAu9txujMp3gJ01iKVRthVUCdBaQWidC5APAtoEyWCmlWGmogBJPf5ZTzUvVcYddqAOrzSvDP3efWNFVJgp20xPFLDdCr5JuX-jW06MgrWeLq28Bf6cY99hqftt2jKpfS-C8s2jvvTfNOMNO33T7QHLXizGeVDZeeKXm0ngGw4PidfJPq419X0sCNAT-5UlGFyHx4kJnUaucyzo_NjIObQiLhWXcG6ponVnn5wyl3_42dJvlAwUOE68IvM6t_lK4GOb7NuKXjDOub4s2v6y9Ih1CDfCzVVR8d-cTWp7dnOIdlOjjBWXnXKH0ImU-sGLbzsALi-iB81bC_R2eGTwlPVsy2KMK9jAa4EBz67-9Oomwrn6V4Qf5-4XcU3PCawbYntafyJ8ijBUYFoi3ON_1uG4MAsRb-hwK91DuN4aljaiUnGRdsSOK2f_7rfNfBn1YeXvyzcaZYf5ElkU1M9R9hS454GJhmsgshPB_itCaP5iPUchwSYgzH70-Xfd8TaYA0bR9KoV-aXCZ6m-7Tg3qmDUauQ08TfICbD-BUNXEr8zXPWRoynAxKksdXou3392KsVufHLLTPYCJQgCsYcLeBtDu7zghBU-EeYEszJ1wRg265WxX7IIt_j6LCs59Zndf77F2dIHOokppnIEN0GpiOf341GMlLpN_x_ZLnJ6JdHQ8uUn5REAZIMl0NB2HW3ojUtbHlRDecF2gyYQCBq3nkoxLKofSQ-nhB-xjH6FqYlvgoO2W2W1Wh1OTnQYDN9CL-vlxGq-h2gDeXXfhIARUbpt-Pq5-T3LgfmrTf1xObagVYyvqm65XqHi9cXyI7M1Q9TTL1mL64KYNRbTe-mkylqTXNCt_7rpccgSnFOHQffX99aWBIIijo-zNLStvNSUvytMoKoHRPxawhjaM7TBShuHGz7oJgjLhrzyDk4IVXgBONbWxZXrnTQukmmM03QCUumozHn0K1rnMmygwjdxc4Pqv1TLizlkvs7SobxOvVHOK-um4LnvKbaoVyHqVfC93ndqMNV_ONxUyvXxerZhOI2L07A8YFhTEyGmaWZRiGBypcUWuKLNQ1iD7djWsNALJGBrqlIorPjWTruVEUpJ4zyAhDcwh574qqp9Vre0oMBhlRuZ3Jy6u6wOYaITBDZepGllJKjpnhXKuinXNrJqhedW-eGKLc-lZVrE65jds4ec_QVYixuLQaOyIW9Rtc--QwqeEVF7rXP-vuXbECN8Wsg5tm581KIfQX53GamryZvpsqvM6aerTGxYVt4az6y3BZsF4m7Tr9ej7_16VcCvU2QV7XvXmuJTsVvMfMkVNOsrn8DQ-jgObHV8hs_2olRhAgEK30B0UtzHlOxXAimmX65xMnSt6n6R0q0wNac_AE1kureB4uJ5nXIsTxe36z2Pf0DUARBxIPFNw3f11fO45bzEv5a9OeTVoCmCqZWSKWEnSApGeoSCbFFuDOmYdrmTQPOlK
+          summary: []
+        - id: msg_0549019692e03980016afae1c11a0487d29fb55c091f9bdf2a
+          type: message
+          status: completed
+          content:
+          - type: output_text
+            annotations: []
+            logprobs: []
+            text: Hello, recorded Responses!
+          role: assistant
+        parallel_tool_calls: true
+        presence_penalty: 0.0
+        previous_response_id: null
+        prompt_cache_key: null
+        prompt_cache_retention: in_memory
+        reasoning:
+          context: current_turn
+          effort: minimal
+          mode: standard
+          summary: null
+        safety_identifier: null
+        service_tier: default
+        store: false
+        temperature: 1.0
+        text:
+          format:
+            type: text
+          verbosity: medium
+        tool_choice: auto
+        tool_usage:
+          image_gen:
+            input_tokens: 0
+            input_tokens_details:
+              image_tokens: 0
+              text_tokens: 0
+            output_tokens: 0
+            output_tokens_details:
+              image_tokens: 0
+              text_tokens: 0
+            total_tokens: 0
+          web_search:
+            num_requests: 0
+        tools: []
+        top_logprobs: 0
+        top_p: 1.0
+        truncation: disabled
+        usage:
+          input_tokens: 15
+          input_tokens_details:
+            cache_write_tokens: 0
+            cache_write_tokens_details:
+              ttl_12h_tokens: 0
+              ttl_30m_tokens: 0
+            cached_tokens: 0
+          output_tokens: 23
+          output_tokens_details:
+            reasoning_tokens: 0
+          total_tokens: 38
+        user: null
+        metadata:
+          test: native-responses

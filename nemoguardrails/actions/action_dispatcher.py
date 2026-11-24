@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Protocol, Tuple, Type, TypeAlias, Union, cast
 
 from nemoguardrails import utils
-from nemoguardrails.exceptions import LLMCallException
+from nemoguardrails.exceptions import LLMCallException, ToolConversationTooLongError
 from nemoguardrails.manifests import ActionRef, RailCatalog, default_rail_catalog, resolve_import_ref
 
 log = logging.getLogger(__name__)
@@ -376,19 +376,18 @@ class ActionDispatcher:
                         result = fn_run_func_with_signature(**params)
                     return result, "success"
 
-                # We forward LLM Call exceptions
-                except LLMCallException as e:
+                # Preserve provider and prompt-size errors for the caller's error handling.
+                except (LLMCallException, ToolConversationTooLongError) as e:
                     raise e
 
                 except Exception as e:
-                    filtered_params = {k: v for k, v in params.items() if k not in ["state", "events", "llm"]}
-                    log.warning(
-                        "Error while execution '%s' with parameters '%s': %s",
-                        action_name,
-                        filtered_params,
-                        e,
+                    # Exception messages and chained tracebacks can contain the checked text too.
+                    log.error(
+                        "Action '%s' failed with %s; parameter names: %s",
+                        self._sanitize_for_log(action_name),
+                        type(e).__name__,
+                        [self._sanitize_for_log(name) for name in params],
                     )
-                    log.exception(e)
 
         return None, "failed"
 
