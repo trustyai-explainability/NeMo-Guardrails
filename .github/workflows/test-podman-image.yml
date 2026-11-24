@@ -1,19 +1,14 @@
-name: Test Podman Image
+name: Smoke Test Live Server
 
 on:
-  workflow_dispatch:
-  schedule:
-    - cron: "0 0 * * 0"
-  push:
-    tags:
-      - "v*"
   pull_request:
+  push:
 
 permissions:
   contents: read
 
 jobs:
-  podman:
+  smoke:
     runs-on: ubuntu-latest
     env:
       IMAGE: nemoguardrails-server
@@ -22,6 +17,9 @@ jobs:
         uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
+
+      - name: Set up uv
+        uses: ./.github/actions/setup-uv
 
       - name: Get runner architecture
         id: runner-arch
@@ -37,12 +35,26 @@ jobs:
       - name: Build image
         run: podman build --platform linux/amd64 --file Dockerfile.server --tag "${TEST_TAG}" .
 
+      - name: Restore Hugging Face models
+        id: hap-model-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: .cache/huggingface
+          key: live-server-smoke-${{ runner.os }}-${{ hashFiles('tests/test_configs/live_server_smoke/config.yml', 'requirements.txt') }}
+          restore-keys: |
+            live-server-smoke-${{ runner.os }}-
+
+      - name: Prepare model cache
+        run: mkdir -p .cache/huggingface
+
       - name: Start container
         run: |
-          podman run -d --name test_container \
+          podman run -d --name live_server_smoke \
             --network host \
-            -v "${PWD}/examples/bots:/app/config:ro" \
-            -e CONFIG_ID=hello_world \
+            -v "${PWD}/tests/test_configs/live_server_smoke:/app/config/live_server_smoke:ro" \
+            -v "${PWD}/.cache/huggingface:/app/.cache/huggingface" \
+            -e CONFIG_ID=live_server_smoke \
+            -e TRANSFORMERS_CACHE=/app/.cache/huggingface/transformers \
             "${TEST_TAG}"
 
       - name: Wait for container to be ready
@@ -64,9 +76,18 @@ jobs:
           fi
 
       - name: Run tests
-        run: curl -f http://127.0.0.1:8000/v1/rails/configs
+        env:
+          LIVE_TEST_MODE: "1"
+          NEMO_GUARDRAILS_TEST_BASE_URL: http://127.0.0.1:8000
+        run: uv run --locked pytest tests/server/test_live_server_smoke.py
 
-      - name: Stop and remove container
+      - name: Save Hugging Face models
+        if: steps.hap-model-cache.outputs.cache-hit != 'true' && github.event_name != 'pull_request'
+        uses: actions/cache/save@v6
+        with:
+          path: .cache/huggingface
+          key: live-server-smoke-${{ runner.os }}-${{ hashFiles('tests/test_configs/live_server_smoke/config.yml', 'requirements.txt') }}
+
+      - name: Stop container
         if: always()
-        run: |
-          podman rm --force test_container
+        run: podman rm --force live_server_smoke
