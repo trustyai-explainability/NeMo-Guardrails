@@ -1,0 +1,33 @@
+models: []
+
+rails:
+  config:
+    hf_classifier:
+      hap:
+        engine: local
+        model: ibm-granite/granite-guardian-hap-125m
+        threshold: 0.5
+        blocked_labels:
+          - LABEL_1
+
+    sensitive_data_detection:
+      input:
+        entities:
+          - EMAIL_ADDRESS
+          - PHONE_NUMBER
+          - CREDIT_CARD
+      output:
+        entities:
+          - EMAIL_ADDRESS
+          - PHONE_NUMBER
+          - CREDIT_CARD
+
+  input:
+    flows:
+      - hf classifier check input $classifier=hap
+      - mask sensitive data on input
+
+  output:
+    flows:
+      - hf classifier check output $classifier=hap
+      - mask sensitive data on output
